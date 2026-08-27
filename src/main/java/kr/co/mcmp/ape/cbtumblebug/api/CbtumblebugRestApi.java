@@ -30,6 +30,7 @@ import kr.co.mcmp.ape.cbtumblebug.dto.MciResponse;
 import kr.co.mcmp.ape.cbtumblebug.dto.NamespaceDto;
 import kr.co.mcmp.ape.cbtumblebug.dto.NamespaceResponse;
 import kr.co.mcmp.ape.cbtumblebug.dto.MciAccessInfoDto;
+import kr.co.mcmp.ape.cbtumblebug.dto.MciCommandResult;
 import kr.co.mcmp.ape.cbtumblebug.dto.Spec;
 import kr.co.mcmp.ape.cbtumblebug.dto.SshKeyResponse;
 import kr.co.mcmp.ape.cbtumblebug.dto.VmAccessInfo;
@@ -132,6 +133,20 @@ public class CbtumblebugRestApi {
     }
 
     public String executeMciCommand(String nsId, String mciId, String command, String subGroupId, String vmId) {
+        return executeMciCommandResult(nsId, mciId, command, subGroupId, vmId).stdout();
+    }
+
+    /**
+     * Executes a command on exactly one VM and preserves both stdout and stderr.
+     * Docker-over-SSH uses this method so a failed command cannot be mistaken for
+     * a successful command merely because the HTTP request itself returned 2xx.
+     */
+    public MciCommandResult executeMciCommandResult(
+            String nsId,
+            String mciId,
+            String command,
+            String subGroupId,
+            String vmId) {
         log.info("Executing command on MCI: {}, VM: {}", mciId, vmId);
         return executeWithConnectionCheck("executeMciCommand", () -> {
             try {
@@ -142,13 +157,16 @@ public class CbtumblebugRestApi {
                 Map<String, Object> requestBody = new HashMap<>();
                 requestBody.put("command", Collections.singletonList(command));
 
-                // 쿼리 파라미터 추가
+                UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromHttpUrl(apiUrl);
                 if (subGroupId != null && !subGroupId.isEmpty()) {
-                    apiUrl += "?subGroupId=" + subGroupId;
+                    uriBuilder.queryParam("subGroupId", subGroupId);
                 }
                 if (vmId != null && !vmId.isEmpty()) {
-                    apiUrl += (apiUrl.contains("?") ? "&" : "?") + "vmId=" + vmId;
+                    // CB-Tumblebug targets one VM with nodeId. subGroupId targets
+                    // every VM in a node group, while vmId is ignored by 0.13.x.
+                    uriBuilder.queryParam("nodeId", vmId);
                 }
+                apiUrl = uriBuilder.build().encode().toUriString();
 
                 String jsonBody = new ObjectMapper().writeValueAsString(requestBody);
 
@@ -162,48 +180,28 @@ public class CbtumblebugRestApi {
 
                 if (response.getStatusCode().is2xxSuccessful()) {
                     String responseBody = response.getBody();
-                    log.info("command result: {}", response.getBody());
+                    if (responseBody == null || responseBody.isBlank()) {
+                        throw new CbtumblebugException("Empty response from MCI command execution");
+                    }
+                    log.debug("MCI command response received: {} bytes", responseBody.length());
                     ObjectMapper mapper = new ObjectMapper();
                     JsonNode rootNode = mapper.readTree(responseBody);
                     JsonNode resultsNode = rootNode.path("results");
-                    if (resultsNode.isArray() && resultsNode.size() > 0) {
+                    if (resultsNode.isArray() && resultsNode.size() == 1) {
                         JsonNode firstResult = resultsNode.get(0);
-                        
-                        // stdout 파싱 개선
-                        JsonNode stdoutNode = firstResult.path("stdout");
-                        String stdout = "";
-                        if (stdoutNode.isObject() && stdoutNode.size() > 0) {
-                            // stdout이 객체인 경우, 첫 번째 키의 값을 가져옴
-                            stdout = stdoutNode.fieldNames().next();
-                            stdout = stdoutNode.path(stdout).asText();
-                        } else if (stdoutNode.isArray() && stdoutNode.size() > 0) {
-                            // stdout이 배열인 경우
-                            stdout = stdoutNode.get(0).asText();
-                        } else if (stdoutNode.isTextual()) {
-                            // stdout이 문자열인 경우
-                            stdout = stdoutNode.asText();
-                        }
-                        
-                        // stderr 파싱 개선
-                        JsonNode stderrNode = firstResult.path("stderr");
-                        String stderr = "";
-                        if (stderrNode.isObject() && stderrNode.size() > 0) {
-                            stderr = stderrNode.fieldNames().next();
-                            stderr = stderrNode.path(stderr).asText();
-                        } else if (stderrNode.isArray() && stderrNode.size() > 0) {
-                            stderr = stderrNode.get(0).asText();
-                        } else if (stderrNode.isTextual()) {
-                            stderr = stderrNode.asText();
-                        }
+                        String stdout = extractCommandOutput(firstResult.path("stdout"));
+                        String stderr = extractCommandOutput(firstResult.path("stderr"));
                         
                         log.debug("Parsed stdout: '{}', stderr: '{}'", stdout, stderr);
                         
                         if (!stderr.isEmpty()) {
                             log.warn("Command execution produced stderr: {}", stderr);
                         }
-                        return stdout;
+                        return new MciCommandResult(stdout, stderr);
                     } else {
-                        throw new CbtumblebugException("Unexpected response format");
+                        throw new CbtumblebugException(
+                                "Expected one VM command result but received "
+                                        + (resultsNode.isArray() ? resultsNode.size() : 0));
                     }
                 } else {
                     throw new CbtumblebugException(
@@ -218,6 +216,33 @@ public class CbtumblebugRestApi {
                 throw new CbtumblebugException("Failed to execute command on MCI: " + e.getMessage());
             }
         });
+    }
+
+    private String extractCommandOutput(JsonNode outputNode) {
+        if (outputNode == null || outputNode.isMissingNode() || outputNode.isNull()) {
+            return "";
+        }
+        if (outputNode.isTextual() || outputNode.isNumber() || outputNode.isBoolean()) {
+            return outputNode.asText();
+        }
+
+        StringBuilder output = new StringBuilder();
+        if (outputNode.isArray()) {
+            outputNode.forEach(value -> appendCommandOutput(output, value));
+        } else if (outputNode.isObject()) {
+            outputNode.elements().forEachRemaining(value -> appendCommandOutput(output, value));
+        }
+        return output.toString();
+    }
+
+    private void appendCommandOutput(StringBuilder output, JsonNode value) {
+        if (value == null || value.isNull()) {
+            return;
+        }
+        if (!output.isEmpty() && output.charAt(output.length() - 1) != '\n') {
+            output.append('\n');
+        }
+        output.append(value.isValueNode() ? value.asText() : value.toString());
     }
 
     public List<NamespaceDto> getAllNamespace() {
