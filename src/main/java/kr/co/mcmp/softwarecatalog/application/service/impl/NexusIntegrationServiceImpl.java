@@ -1902,7 +1902,7 @@ public class NexusIntegrationServiceImpl implements NexusIntegrationService {
             loginProcess.environment().put("DOCKER_REGISTRY_INSECURE", "true");
             
             // Docker daemon host 설정
-            loginProcess.environment().put("DOCKER_HOST", "tcp://localhost:2375");
+            loginProcess.environment().put("DOCKER_HOST", "unix:///var/run/docker.sock");
             
             return executeDockerCommandWithRetry(loginProcess, "Docker Login (Direct)", 30);
             

@@ -1,11 +1,9 @@
 package kr.co.mcmp.softwarecatalog.docker.service;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,8 +13,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
 import kr.co.mcmp.softwarecatalog.application.exception.ApplicationException;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerCommandResult;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 
 @ExtendWith(MockitoExtension.class)
 class DockerSetupServiceTest {
@@ -24,96 +23,121 @@ class DockerSetupServiceTest {
     private static final String NAMESPACE = "ns01";
     private static final String MCI_ID = "mci01";
     private static final String VM_ID = "vm01";
+    private static final DockerTarget TARGET = new DockerTarget(NAMESPACE, MCI_ID, VM_ID);
 
     @Mock
-    private CbtumblebugRestApi cbtumblebugRestApi;
+    private DockerSshCommandExecutor commandExecutor;
 
     private DockerSetupService dockerSetupService;
 
     @BeforeEach
     void setUp() {
-        dockerSetupService = new DockerSetupService(cbtumblebugRestApi);
+        dockerSetupService = new DockerSetupService(commandExecutor);
     }
 
     @Test
-    void checkAndInstallDockerSkipsConfigurationWhenDockerRemoteApiAlreadyEnabled() {
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("docker --version") && command.contains("Remote API enabled")), isNull(), eq(VM_ID)))
-                .thenReturn("Docker version 27.0.0\nRemote API enabled");
+    void keepsInstalledDockerOnUnixSocketWithoutRestartingIt() {
+        stub("command -v docker", "Docker version 29.0.0");
+        stub("mcmp_override=", "NO_LEGACY_2375_OVERRIDE");
+        stub("docker info >/dev/null", "DOCKER_READY");
+        stub("ss -lntH", "SECURE_DOCKER_READY");
 
         dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID);
 
-        verify(cbtumblebugRestApi, times(1))
-                .executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                        command.contains("docker --version") && command.contains("Remote API enabled")), isNull(), eq(VM_ID));
-        verify(cbtumblebugRestApi, never())
-                .executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                        command.contains("systemctl restart docker")), isNull(), eq(VM_ID));
+        verify(commandExecutor, never()).execute(
+                eq(TARGET), org.mockito.ArgumentMatchers.contains("get.docker.com"));
+        verify(commandExecutor, never()).execute(
+                eq(TARGET), org.mockito.ArgumentMatchers.contains("chmod 666"));
     }
 
     @Test
-    void checkAndInstallDockerFailsWhenDockerServiceIsNotManagedBySystemd() {
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("docker --version") && command.contains("Remote API enabled")), isNull(), eq(VM_ID)))
-                .thenReturn("Docker version 27.0.0\nRemote API not enabled");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("sudo -n true")), isNull(), eq(VM_ID)))
-                .thenReturn("SUDO_OK");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("systemctl cat docker.service")), isNull(), eq(VM_ID)))
-                .thenReturn("DOCKER_SERVICE_NOT_FOUND");
+    void installsMissingDockerAndNeverEnablesTcpApi() {
+        stub("command -v docker", "DOCKER_NOT_INSTALLED");
+        stub("sudo -n true", "SUDO_OK");
+        stub("get.docker.com", "DOCKER_INSTALLED");
+        stub("mcmp_override=", "NO_LEGACY_2375_OVERRIDE");
+        stub("docker info >/dev/null", "DOCKER_READY");
+        stub("ss -lntH", "SECURE_DOCKER_READY");
 
-        assertThatThrownBy(() -> dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID))
-                .isInstanceOf(ApplicationException.class)
-                .hasMessageContaining("Docker systemd service is not available");
+        dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID);
 
-        verify(cbtumblebugRestApi, never())
-                .executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                        command.contains("get-docker.sh")), isNull(), eq(VM_ID));
-        verify(cbtumblebugRestApi, never())
-                .executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                        command.contains("override.conf")), isNull(), eq(VM_ID));
+        verify(commandExecutor).execute(
+                eq(TARGET),
+                org.mockito.ArgumentMatchers.argThat(command ->
+                        command.contains("get.docker.com")
+                                && command.contains("systemctl enable --now docker")
+                                && !command.contains("tcp://0.0.0.0")));
     }
 
     @Test
-    void checkAndInstallDockerFailsWhenDockerRestartFailsAfterRemoteApiConfiguration() {
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("docker --version") && command.contains("Remote API enabled")), isNull(), eq(VM_ID)))
-                .thenReturn("Docker version 27.0.0\nRemote API not enabled");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("sudo -n true")), isNull(), eq(VM_ID)))
-                .thenReturn("SUDO_OK");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("systemctl cat docker.service")), isNull(), eq(VM_ID)))
-                .thenReturn("DOCKER_SERVICE_FOUND");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("override.conf")), isNull(), eq(VM_ID)))
-                .thenReturn("DOCKER_REMOTE_CONFIGURED");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("chmod 666")), isNull(), eq(VM_ID)))
-                .thenReturn("permissions updated");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("bridge-nf-call-iptables")), isNull(), eq(VM_ID)))
-                .thenReturn("sysctl updated");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("vm.max_map_count")), isNull(), eq(VM_ID)))
-                .thenReturn("vm.max_map_count=262144");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("PubkeyAcceptedAlgorithms")), isNull(), eq(VM_ID)))
-                .thenReturn("sshd restarted");
-        when(cbtumblebugRestApi.executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                command.contains("systemctl restart docker")), isNull(), eq(VM_ID)))
-                .thenReturn("Failed to restart docker.service: Unit docker.service not found.\nDOCKER_RESTART_FAILED");
+    void removesOnlyTheKnownLegacy2375Override() {
+        stub("command -v docker", "Docker version 29.0.0");
+        stub("mcmp_override=", "LEGACY_2375_REMOVED");
+        stub("docker info >/dev/null", "DOCKER_READY");
+        stub("ss -lntH", "SECURE_DOCKER_READY");
 
-        assertThatThrownBy(() -> dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID))
+        dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID);
+
+        verify(commandExecutor).execute(
+                eq(TARGET),
+                org.mockito.ArgumentMatchers.argThat(command ->
+                        command.contains("/etc/systemd/system/docker.service.d/override.conf")
+                                && command.contains("sed -i")
+                                && command.contains("systemctl restart docker")));
+    }
+
+    @Test
+    void refusesToContinueWhen2375StillListens() {
+        stub("command -v docker", "Docker version 29.0.0");
+        stub("mcmp_override=", "NO_LEGACY_2375_OVERRIDE");
+        stub("docker info >/dev/null", "DOCKER_READY");
+        stub("ss -lntH", "INSECURE_2375_LISTENER");
+
+        assertThatThrownBy(() ->
+                dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID))
                 .isInstanceOf(ApplicationException.class)
-                .hasMessageContaining("Failed to restart Docker service");
+                .hasMessageContaining("2375 is still active");
+    }
 
-        verify(cbtumblebugRestApi, never())
-                .executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                        command.contains("get-docker.sh")), isNull(), eq(VM_ID));
-        verify(cbtumblebugRestApi, never())
-                .executeMciCommand(eq(NAMESPACE), eq(MCI_ID), argThat(command ->
-                        command.startsWith("ps aux | grep dockerd")), isNull(), eq(VM_ID));
+    @Test
+    void failsClosedWhenPortInspectionIsUnavailable() {
+        stub("command -v docker", "Docker version 29.0.0");
+        stub("mcmp_override=", "NO_LEGACY_2375_OVERRIDE");
+        stub("docker info >/dev/null", "DOCKER_READY");
+        stub("ss -lntH", "PORT_CHECK_UNAVAILABLE");
+
+        assertThatThrownBy(() ->
+                dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("Cannot verify that Docker port 2375 is closed");
+    }
+
+    @Test
+    void failsWhenDockerIsMissingAndPasswordlessSudoIsUnavailable() {
+        stub("command -v docker", "DOCKER_NOT_INSTALLED");
+        stub("sudo -n true", "SUDO_REQUIRED");
+
+        assertThatThrownBy(() ->
+                dockerSetupService.checkAndInstallDocker(NAMESPACE, MCI_ID, VM_ID))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("passwordless sudo");
+
+        verify(commandExecutor, never()).execute(
+                eq(TARGET), org.mockito.ArgumentMatchers.contains("get.docker.com"));
+    }
+
+    @Test
+    void rejectsUnsafeTargetBeforeAnySshCommand() {
+        assertThatThrownBy(() ->
+                dockerSetupService.checkAndInstallDocker("../system", MCI_ID, VM_ID))
+                .isInstanceOf(ApplicationException.class)
+                .hasMessageContaining("Invalid Docker target");
+        verify(commandExecutor, never()).execute(eq(TARGET), anyString());
+    }
+
+    private void stub(String commandFragment, String stdout) {
+        when(commandExecutor.execute(
+                eq(TARGET), org.mockito.ArgumentMatchers.contains(commandFragment)))
+                .thenReturn(new DockerCommandResult(0, stdout, ""));
     }
 }

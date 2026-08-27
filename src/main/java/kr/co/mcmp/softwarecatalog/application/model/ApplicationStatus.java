@@ -55,6 +55,9 @@ public class ApplicationStatus {
     @Column(name ="vm_id")
     private String vmId;
 
+    @Column(name = "container_id", length = 64)
+    private String containerId;
+
     @ManyToOne
     @JoinColumn(name = "catalog_id")
     private SoftwareCatalog catalog;

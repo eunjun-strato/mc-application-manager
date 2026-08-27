@@ -1,285 +1,353 @@
 package kr.co.mcmp.softwarecatalog.docker.service;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.springframework.stereotype.Service;
 
-import com.github.dockerjava.api.DockerClient;
-import com.github.dockerjava.api.command.CreateContainerCmd;
-import com.github.dockerjava.api.command.CreateContainerResponse;
-import com.github.dockerjava.api.command.InspectContainerResponse;
-import com.github.dockerjava.api.command.PullImageResultCallback;
-import com.github.dockerjava.api.exception.NotFoundException;
-import com.github.dockerjava.api.model.Container;
-import com.github.dockerjava.api.model.ExposedPort;
-import com.github.dockerjava.api.model.HostConfig;
-import com.github.dockerjava.api.model.Info;
-import com.github.dockerjava.api.model.PortBinding;
-import com.github.dockerjava.api.model.Ports;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import kr.co.mcmp.softwarecatalog.docker.model.ContainerDeployResult;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerCommandResult;
 import kr.co.mcmp.softwarecatalog.docker.model.DockerHostResourceInfo;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import kr.co.mcmp.softwarecatalog.application.config.NexusConfig;
 
+/**
+ * Docker lifecycle operations executed on one VM through CB-Tumblebug SSH.
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class DockerOperationService {
-    
-    private final DockerClientFactory dockerClientFactory;
-    private final NexusConfig nexusConfig;
 
-    public DockerHostResourceInfo getHostResourceInfo(String host) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            Info info = dockerClient.infoCmd().exec();
-            if (info == null) {
-                return null;
-            }
+    private static final Pattern IMAGE_REFERENCE =
+            Pattern.compile("[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}");
+    private static final Pattern CONTAINER_NAME =
+            Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}");
+    private static final Pattern CONTAINER_ID = Pattern.compile("[a-f0-9]{12,64}");
+    private static final Pattern IP_ADDRESS = Pattern.compile("[A-Fa-f0-9:.]{2,64}");
+    private static final Pattern CONTAINER_ID_MARKER =
+            Pattern.compile("(?:^|\\n)__MCMP_CONTAINER_ID__=([a-f0-9]{12,64})(?:\\n|$)");
 
-            Integer cpuCores = info.getNCPU();
-            Long totalMemoryBytes = info.getMemTotal();
-            Double memoryGb = totalMemoryBytes != null ? totalMemoryBytes / (1024.0 * 1024.0 * 1024.0) : null;
+    private final DockerSshCommandExecutor commandExecutor;
+    private final ObjectMapper objectMapper;
 
-            log.info("Resolved Docker host resources for {}: cpuCores={}, memoryGb={}", host, cpuCores, memoryGb);
+    public DockerHostResourceInfo getHostResourceInfo(DockerTarget target) {
+        try {
+            DockerCommandResult result = commandExecutor.execute(
+                    target, "docker info --format '{{json .}}'");
+            JsonNode info = objectMapper.readTree(result.stdout());
+            Integer cpuCores = info.path("NCPU").isNumber() ? info.path("NCPU").asInt() : null;
+            Long totalMemoryBytes = info.path("MemTotal").isNumber() ? info.path("MemTotal").asLong() : null;
+            Double memoryGb = totalMemoryBytes == null
+                    ? null
+                    : totalMemoryBytes / (1024.0 * 1024.0 * 1024.0);
             return new DockerHostResourceInfo(cpuCores, memoryGb);
         } catch (Exception e) {
-            log.warn("Failed to resolve Docker host resources for host: {}", host, e);
+            log.warn("Failed to resolve Docker host resources for VM {}", target.vmId(), e);
             return null;
         }
     }
 
-    public ContainerDeployResult runDockerContainer(String host, Map<String, String> deployParams) {
-        return runDockerContainer(host, deployParams, null, -1, null);
-    }
-    
-    public ContainerDeployResult runDockerContainer(String host, Map<String, String> deployParams, 
-                                                   List<String> vmPublicIps, int vmIndex, String vmId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            log.info("Docker client created successfully");
-            String imageName = deployParams.get("image");
-            log.info("Image name: {}", imageName);
-
-            // 이미지 존재 여부 확인 및 pull
-            boolean imageExists = checkImageExists(dockerClient, imageName);
-            log.info("Image exists: {}", imageExists);
-            if (!imageExists) {
-                log.info("Pulling image: {}", imageName);
-                pullImage(dockerClient, imageName);
-                log.info("Image pulled successfully");
+    public ContainerDeployResult runDockerContainer(
+            DockerTarget target,
+            Map<String, String> deployParams,
+            List<String> vmPublicIps,
+            int vmIndex) {
+        try {
+            if (deployParams == null) {
+                throw new IllegalArgumentException("Deployment parameters are required");
             }
+            String imageName = validateImageReference(deployParams.get("image"));
+            String containerName = validateContainerName(deployParams.get("name"));
+            List<PortMapping> portMappings = parsePortBindings(deployParams.get("portBindings"));
+            Map<String, String> environmentVariables =
+                    getEnvironmentVariables(imageName, vmPublicIps, vmIndex, target.vmId());
 
-            // 포트 바인딩 설정 (복수 포트 지원)
-            String portBindingsStr = deployParams.get("portBindings");
-            Ports portBindings = parsePortBindings(portBindingsStr);
+            String createCommand = buildCreateCommand(
+                    target, deployParams, imageName, containerName, portMappings, environmentVariables);
+            String script = "if ! docker image inspect "
+                    + DockerSshCommandExecutor.shellQuote(imageName)
+                    + " >/dev/null 2>&1; then docker pull "
+                    + DockerSshCommandExecutor.shellQuote(imageName)
+                    + " || exit $?; fi\n"
+                    + "mcmp_container_id=$(" + createCommand + ") || exit $?\n"
+                    + "docker start \"$mcmp_container_id\" >/dev/null || exit $?\n"
+                    + "mcmp_attempt=0\n"
+                    + "while [ \"$mcmp_attempt\" -lt 60 ]; do\n"
+                    + "  mcmp_state=$(docker inspect --format '{{.State.Status}}' "
+                    + "\"$mcmp_container_id\" 2>/dev/null) || exit $?\n"
+                    + "  if [ \"$mcmp_state\" = running ]; then\n"
+                    + "    printf '__MCMP_CONTAINER_ID__=%s\\n' \"$mcmp_container_id\"\n"
+                    + "    exit 0\n"
+                    + "  fi\n"
+                    + "  if [ \"$mcmp_state\" = exited ] || [ \"$mcmp_state\" = dead ]; then\n"
+                    + "    docker logs --tail 50 \"$mcmp_container_id\" >&2 || true\n"
+                    + "    exit 1\n"
+                    + "  fi\n"
+                    + "  mcmp_attempt=$((mcmp_attempt + 1))\n"
+                    + "  sleep 1\n"
+                    + "done\n"
+                    + "echo 'Container did not reach running state within 60 seconds' >&2\n"
+                    + "exit 124";
 
-            // HostConfig 생성
-            HostConfig hostConfig = HostConfig.newHostConfig().withPortBindings(portBindings);
+            DockerCommandResult result = commandExecutor.execute(target, script);
+            String containerId = extractContainerId(result.stdout());
 
-            // 이미지 타입에 따른 적절한 명령어 설정
-            String[] cmd = getCommandForDebugKeepAlive(isDebugKeepAliveEnabled(deployParams));
-            
-            // 노출할 포트들 추출
-            ExposedPort[] exposedPorts = portBindings.getBindings().keySet().toArray(new ExposedPort[0]);
-            
-            // 환경변수 설정 (애플리케이션별) - 클러스터링 지원
-            Map<String, String> envVars = getEnvironmentVariables(imageName, vmPublicIps, vmIndex, vmId);
-            
-            // 컨테이너 생성
-            CreateContainerCmd createCmd = dockerClient.createContainerCmd(imageName)
-                .withName(deployParams.get("name"))
-                .withHostConfig(hostConfig)
-                .withExposedPorts(exposedPorts);
-            
-            // 환경변수 설정
-            if (!envVars.isEmpty()) {
-                createCmd.withEnv(envVars.entrySet().stream()
-                    .map(entry -> entry.getKey() + "=" + entry.getValue())
-                    .toArray(String[]::new));
+            if (imageName.toLowerCase().contains("redis")
+                    && vmPublicIps != null && !vmPublicIps.isEmpty() && vmIndex == 0) {
+                configureRedisCluster(target, containerId, vmPublicIps);
             }
-            
-            // 명령어 설정 (null이 아닌 경우에만)
-            if (cmd != null) {
-                createCmd.withCmd(cmd);
-            }
-            
-            CreateContainerResponse container = createCmd.exec();
-
-            String containerId = container.getId();
-            log.info("Container created with ID: {}", containerId);
-
-            // 컨테이너 시작
-            dockerClient.startContainerCmd(containerId).exec();
-            log.info("Container started: {}", containerId);
-
-            boolean isRunning = waitForContainerToStart(dockerClient, containerId);
-            log.info("Container running status: {}", isRunning);
-            
-            // Redis 클러스터링 자동 구성 (Redis 클러스터링인 경우)
-            if (isRunning && imageName.toLowerCase().contains("redis") && vmPublicIps != null && !vmPublicIps.isEmpty() && vmIndex >= 0) {
-                try {
-                    Thread.sleep(5000); // Redis 서버 시작 대기
-                    configureRedisCluster(dockerClient, containerId, vmPublicIps, vmIndex);
-                } catch (Exception e) {
-                    log.error("Failed to configure Redis cluster", e);
-                }
-            }
-            
-            // 컨테이너 상태를 더 자세히 로깅
-            if (!isRunning) {
-                InspectContainerResponse containerInfo = dockerClient.inspectContainerCmd(containerId).exec();
-                log.warn("Container failed to start. State: {}, ExitCode: {}, Error: {}", 
-                    containerInfo.getState().getStatus(), 
-                    containerInfo.getState().getExitCode(),
-                    containerInfo.getState().getError());
-            }
-
-            return new ContainerDeployResult(containerId, "Container started", isRunning);
+            return new ContainerDeployResult(containerId, "Container started", true);
         } catch (Exception e) {
-            log.error("Error running Docker container", e);
-            return new ContainerDeployResult(null, e.getMessage(), false);
+            log.error("Error running Docker container through SSH on VM {}", target.vmId(), e);
+            String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            return new ContainerDeployResult(null, message, false);
         }
     }
 
-    
+    public String getContainerId(DockerTarget target, String containerName) {
+        String safeName = validateContainerName(containerName);
+        String script = "mcmp_id=$(docker inspect --type container --format '{{.Id}}' "
+                + DockerSshCommandExecutor.shellQuote(safeName) + " 2>/dev/null || true)\n"
+                + "printf '%s\\n' \"$mcmp_id\"";
+        DockerCommandResult result = commandExecutor.execute(target, script);
+        String value = result.stdout().trim();
+        if (value.isEmpty()) {
+            return null;
+        }
+        return validateContainerId(value);
+    }
 
-    private boolean checkImageExists(DockerClient dockerClient, String imageName) {
+    public String getDockerContainerStatus(DockerTarget target, String containerId) {
+        String id = validateContainerId(containerId);
+        DockerCommandResult result = commandExecutor.execute(
+                target,
+                "docker inspect --type container --format '{{.State.Status}}' "
+                        + DockerSshCommandExecutor.shellQuote(id));
+        return result.stdout().trim();
+    }
+
+    public String stopDockerContainer(DockerTarget target, String containerId) {
+        executeContainerAction(target, "stop", containerId);
+        return "Container stopped successfully";
+    }
+
+    public String startDockerContainer(DockerTarget target, String containerId) {
+        executeContainerAction(target, "start", containerId);
+        return "Container started successfully";
+    }
+
+    public String restartDockerContainer(DockerTarget target, String containerId) {
+        executeContainerAction(target, "restart", containerId);
+        return "Container restarted successfully";
+    }
+
+    public String removeDockerContainer(DockerTarget target, String containerId) {
+        String id = validateContainerId(containerId);
+        String script = "if docker inspect --type container "
+                + DockerSshCommandExecutor.shellQuote(id) + " >/dev/null 2>&1; then "
+                + "docker rm -f -v " + DockerSshCommandExecutor.shellQuote(id)
+                + " >/dev/null; echo REMOVED; else echo ALREADY_REMOVED; fi";
+        DockerCommandResult result = commandExecutor.execute(target, script);
+        return result.stdout().contains("ALREADY_REMOVED")
+                ? "Container already removed"
+                : "Container removed successfully";
+    }
+
+    public boolean isContainerRunning(DockerTarget target, String containerId) {
         try {
-            dockerClient.inspectImageCmd(imageName).exec();
-            return true; 
-        } catch (NotFoundException e) {
+            return "running".equalsIgnoreCase(getDockerContainerStatus(target, containerId));
+        } catch (DockerCommandException e) {
+            log.warn("Failed to resolve container state on VM {}: {}", target.vmId(), e.getMessage());
             return false;
         }
     }
 
-    private void pullImage(DockerClient dockerClient, String imageName) throws InterruptedException {
-        try {
-            // 항상 Docker Hub에서 직접 pull
-            log.info("Pulling image from Docker Hub: {}", imageName);
-            dockerClient.pullImageCmd(imageName)
-                .exec(new PullImageResultCallback())
-                .awaitCompletion(5, TimeUnit.MINUTES);
-        } catch (NotFoundException e) {
-            log.error("Image not found: {}", imageName);
-            throw e;
+    public List<String> getContainerLogs(DockerTarget target, String containerId, int maxLines) {
+        String id = validateContainerId(containerId);
+        if (maxLines < 1 || maxLines > 1_000) {
+            throw new IllegalArgumentException("Docker log line limit must be between 1 and 1000");
         }
+        DockerCommandResult result = commandExecutor.execute(
+                target,
+                "docker logs --tail " + maxLines + " "
+                        + DockerSshCommandExecutor.shellQuote(id) + " 2>&1");
+        return result.stdout().lines().toList();
     }
-    
-    /**
-     * 포트 바인딩 문자열을 파싱하여 Ports 객체를 생성합니다.
-     * 지원 형식: "9200:9200" 또는 "9200:9200,9300:9300"
-     */
-    private Ports parsePortBindings(String portBindingsStr) {
-        Ports portBindings = new Ports();
-        
-        if (portBindingsStr == null || portBindingsStr.trim().isEmpty()) {
-            return portBindings;
+
+    private void executeContainerAction(DockerTarget target, String action, String containerId) {
+        if (!List.of("start", "stop", "restart").contains(action)) {
+            throw new IllegalArgumentException("Unsupported Docker action: " + action);
         }
-        
-        try {
-            // 쉼표로 분리하여 각 포트 바인딩 처리
-            String[] portMappings = portBindingsStr.split(",");
-            
-            for (String portMapping : portMappings) {
-                portMapping = portMapping.trim();
-                if (portMapping.isEmpty()) {
-                    continue;
-                }
-                
-                // "hostPort:containerPort" 형식 파싱
-                String[] parts = portMapping.split(":");
-                if (parts.length != 2) {
-                    log.warn("Invalid port mapping format: {}", portMapping);
-                    continue;
-                }
-                
-                int hostPort = Integer.parseInt(parts[0].trim());
-                int containerPort = Integer.parseInt(parts[1].trim());
-                
-                ExposedPort exposedPort = ExposedPort.tcp(containerPort);
-                portBindings.bind(exposedPort, Ports.Binding.bindPort(hostPort));
-                
-                log.debug("Added port binding: {}:{}", hostPort, containerPort);
+        String id = validateContainerId(containerId);
+        commandExecutor.execute(
+                target,
+                "docker " + action + " " + DockerSshCommandExecutor.shellQuote(id) + " >/dev/null");
+    }
+
+    private String buildCreateCommand(
+            DockerTarget target,
+            Map<String, String> deployParams,
+            String imageName,
+            String containerName,
+            List<PortMapping> portMappings,
+            Map<String, String> environmentVariables) {
+        List<String> arguments = new ArrayList<>();
+        arguments.add("docker");
+        arguments.add("create");
+        arguments.add("--name");
+        arguments.add(containerName);
+
+        Map<String, String> labels = new LinkedHashMap<>();
+        labels.put("mcmp.managed", "true");
+        labels.put("mcmp.namespace", target.namespace());
+        labels.put("mcmp.mci-id", target.mciId());
+        labels.put("mcmp.vm-id", target.vmId());
+        putNumericLabel(labels, "mcmp.catalog-id", deployParams.get("catalogId"));
+        putNumericLabel(labels, "mcmp.deployment-id", deployParams.get("deploymentId"));
+        labels.forEach((key, value) -> {
+            arguments.add("--label");
+            arguments.add(key + "=" + value);
+        });
+
+        for (PortMapping mapping : portMappings) {
+            arguments.add("-p");
+            arguments.add(mapping.hostPort() + ":" + mapping.containerPort());
+        }
+        environmentVariables.forEach((key, value) -> {
+            arguments.add("-e");
+            arguments.add(key + "=" + value);
+        });
+        arguments.add(imageName);
+        if (Boolean.parseBoolean(deployParams.getOrDefault("debugKeepAlive", "false"))) {
+            arguments.add("tail");
+            arguments.add("-f");
+            arguments.add("/dev/null");
+        }
+        return shellCommand(arguments);
+    }
+
+    private void putNumericLabel(Map<String, String> labels, String key, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        if (!value.matches("\\d+")) {
+            throw new IllegalArgumentException("Invalid numeric Docker label value for " + key);
+        }
+        labels.put(key, value);
+    }
+
+    private String shellCommand(List<String> arguments) {
+        return arguments.stream()
+                .map(DockerSshCommandExecutor::shellQuote)
+                .reduce((left, right) -> left + " " + right)
+                .orElseThrow();
+    }
+
+    private String extractContainerId(String output) {
+        Matcher matcher = CONTAINER_ID_MARKER.matcher(output == null ? "" : output);
+        if (!matcher.find()) {
+            throw new IllegalStateException("Docker create returned no container ID");
+        }
+        return validateContainerId(matcher.group(1));
+    }
+
+    private String validateImageReference(String imageReference) {
+        if (imageReference == null || !IMAGE_REFERENCE.matcher(imageReference).matches()) {
+            throw new IllegalArgumentException("Invalid Docker image reference: " + imageReference);
+        }
+        return imageReference;
+    }
+
+    private String validateContainerName(String containerName) {
+        if (containerName == null || !CONTAINER_NAME.matcher(containerName).matches()) {
+            throw new IllegalArgumentException("Invalid Docker container name: " + containerName);
+        }
+        return containerName;
+    }
+
+    private String validateContainerId(String containerId) {
+        if (containerId == null || !CONTAINER_ID.matcher(containerId.trim()).matches()) {
+            throw new IllegalArgumentException("Invalid Docker container ID");
+        }
+        return containerId.trim();
+    }
+
+    private List<PortMapping> parsePortBindings(String portBindings) {
+        List<PortMapping> mappings = new ArrayList<>();
+        if (portBindings == null || portBindings.isBlank()) {
+            return mappings;
+        }
+        for (String rawMapping : portBindings.split(",")) {
+            String mapping = rawMapping.trim();
+            if (mapping.isEmpty()) {
+                continue;
             }
-            
+            String[] parts = mapping.split(":", -1);
+            if (parts.length != 2) {
+                throw new IllegalArgumentException("Invalid Docker port mapping: " + mapping);
+            }
+            int hostPort = parsePort(parts[0], "host");
+            int containerPort = parsePort(parts[1], "container");
+            mappings.add(new PortMapping(hostPort, containerPort));
+        }
+        return mappings;
+    }
+
+    private int parsePort(String value, String type) {
+        try {
+            int port = Integer.parseInt(value.trim());
+            if (port < 1 || port > 65_535) {
+                throw new IllegalArgumentException(type + " port must be between 1 and 65535");
+            }
+            return port;
         } catch (NumberFormatException e) {
-            log.error("Invalid port number in port bindings: {}", portBindingsStr, e);
-            throw new IllegalArgumentException("Invalid port number in port bindings: " + portBindingsStr, e);
+            throw new IllegalArgumentException("Invalid " + type + " port: " + value, e);
+        }
+    }
+
+    private void configureRedisCluster(
+            DockerTarget target, String containerId, List<String> vmPublicIps) {
+        String id = validateContainerId(containerId);
+        try {
+            for (int i = 1; i < vmPublicIps.size(); i++) {
+                String peerIp = validateIpAddress(vmPublicIps.get(i));
+                commandExecutor.execute(
+                        target,
+                        "docker exec " + DockerSshCommandExecutor.shellQuote(id)
+                                + " redis-cli -h localhost -p 6379 cluster meet "
+                                + DockerSshCommandExecutor.shellQuote(peerIp) + " 6379");
+            }
+            commandExecutor.execute(
+                    target,
+                    "docker exec " + DockerSshCommandExecutor.shellQuote(id)
+                            + " redis-cli -h localhost -p 6379 cluster addslots 0 1 2 3 4 5");
         } catch (Exception e) {
-            log.error("Error parsing port bindings: {}", portBindingsStr, e);
-            throw new IllegalArgumentException("Error parsing port bindings: " + portBindingsStr, e);
+            log.error("Failed to configure Redis cluster for container {}", id, e);
         }
-        
-        return portBindings;
-    }
-    private boolean waitForContainerToStart(DockerClient dockerClient, String containerId) throws InterruptedException {
-        // Elasticsearch는 시작하는데 더 오래 걸릴 수 있으므로 60초로 증가
-        for (int i = 0; i < 60; i++) {
-            InspectContainerResponse containerInfo = dockerClient.inspectContainerCmd(containerId).exec();
-            String status = containerInfo.getState().getStatus();
-            Boolean running = containerInfo.getState().getRunning();
-            
-            log.info("Container status check {}/60: status={}, running={}", i + 1, status, running);
-            
-            if (running != null && running) {
-                log.info("Container is now running successfully");
-                return true;
-            }
-            
-            // 컨테이너가 종료된 경우
-            if ("exited".equals(status)) {
-                log.warn("Container exited with code: {}", containerInfo.getState().getExitCode());
-                // 컨테이너 로그 확인 (간단한 방법)
-                try {
-                    log.warn("Container exited. Check container logs manually with: docker logs {}", containerId);
-                } catch (Exception e) {
-                    log.warn("Could not retrieve container logs: {}", e.getMessage());
-                }
-                return false;
-            }
-            
-            Thread.sleep(1000);
-        }
-        log.warn("Container failed to start within 60 seconds");
-        return false;
-    }
-    
-    /**
-     * 디버그 keep-alive 모드일 때만 Docker CMD를 override합니다.
-     */
-    private boolean isDebugKeepAliveEnabled(Map<String, String> deployParams) {
-        return deployParams != null && Boolean.parseBoolean(deployParams.getOrDefault("debugKeepAlive", "false"));
     }
 
-    private String[] getCommandForDebugKeepAlive(boolean debugKeepAlive) {
-        if (debugKeepAlive) {
-            return new String[]{"tail", "-f", "/dev/null"};
+    private String validateIpAddress(String value) {
+        if (value == null || !IP_ADDRESS.matcher(value).matches()) {
+            throw new IllegalArgumentException("Invalid cluster peer IP address");
         }
+        return value;
+    }
 
-        return null;
-    }
-    
-    /**
-     * 이미지 타입에 따른 환경변수를 반환합니다.
-     */
-    private Map<String, String> getEnvironmentVariables(String imageName) {
-        return getEnvironmentVariables(imageName, null, -1, null);
-    }
-    
-    /**
-     * 이미지 타입에 따른 환경변수를 반환합니다. (클러스터링 지원)
-     */
-    private Map<String, String> getEnvironmentVariables(String imageName, List<String> vmPublicIps, int vmIndex, String vmId) {
-        Map<String, String> envVars = new HashMap<>();
+    private Map<String, String> getEnvironmentVariables(
+            String imageName, List<String> vmPublicIps, int vmIndex, String vmId) {
+        Map<String, String> envVars = new LinkedHashMap<>();
         String lowerImageName = imageName.toLowerCase();
-        
+
         if (lowerImageName.contains("elasticsearch")) {
-            // Elasticsearch 클러스터링 환경 변수 설정
             envVars.put("cluster.name", "elasticsearch-cluster");
             envVars.put("network.host", "0.0.0.0");
             envVars.put("http.port", "9200");
@@ -288,219 +356,56 @@ public class DockerOperationService {
             envVars.put("xpack.ml.enabled", "false");
             envVars.put("ES_JAVA_OPTS", "-Xms256m -Xmx256m");
             envVars.put("bootstrap.memory_lock", "false");
-            
-            // 클러스터링 설정이 있는 경우
             if (vmPublicIps != null && !vmPublicIps.isEmpty() && vmIndex >= 0) {
-                // 노드 이름 설정 (es-01, es-02, es-03...)
-                String nodeName = String.format("es-%02d", vmIndex + 1);
-                envVars.put("node.name", nodeName);
-                
-                // discovery.seed_hosts를 공인 IP로 설정
-                String seedHosts = String.join(",", vmPublicIps);
-                envVars.put("discovery.seed_hosts", seedHosts);
-                
-                // cluster.initial_master_nodes를 노드 이름으로 설정
+                envVars.put("node.name", String.format("es-%02d", vmIndex + 1));
+                envVars.put("discovery.seed_hosts", String.join(",", vmPublicIps));
                 List<String> nodeNames = new ArrayList<>();
                 for (int i = 0; i < vmPublicIps.size(); i++) {
                     nodeNames.add(String.format("es-%02d", i + 1));
                 }
                 envVars.put("cluster.initial_master_nodes", String.join(",", nodeNames));
-                
-                // publish_host를 현재 노드의 공인 IP로 설정
                 if (vmIndex < vmPublicIps.size()) {
                     envVars.put("network.publish_host", vmPublicIps.get(vmIndex));
                 }
             } else {
-                // 단일 노드 설정 (fallback)
                 envVars.put("discovery.type", "single-node");
             }
         } else if (lowerImageName.contains("redis")) {
-            // Redis 클러스터링 환경변수 설정
             envVars.put("REDIS_PASSWORD", "");
-            
-            // 클러스터링 설정이 있는 경우
             if (vmPublicIps != null && !vmPublicIps.isEmpty() && vmIndex >= 0) {
-                // Redis Cluster 모드 활성화
                 envVars.put("REDIS_CLUSTER_ENABLED", "yes");
                 envVars.put("REDIS_CLUSTER_ANNOUNCE_IP", vmPublicIps.get(vmIndex));
                 envVars.put("REDIS_CLUSTER_ANNOUNCE_PORT", "7000");
                 envVars.put("REDIS_CLUSTER_ANNOUNCE_BUS_PORT", "17000");
-                
-                // 클러스터 노드 설정
                 envVars.put("REDIS_CLUSTER_NODES", String.join(" ", vmPublicIps));
                 envVars.put("REDIS_CLUSTER_REPLICAS", "1");
-                
-                // 포트 설정
                 envVars.put("REDIS_PORT", "6379");
                 envVars.put("REDIS_CLUSTER_PORT", "7000");
-                
-                // 네트워크 설정
                 envVars.put("REDIS_BIND", "0.0.0.0");
                 envVars.put("REDIS_PROTECTED_MODE", "no");
-                
-                // 클러스터 설정
                 envVars.put("REDIS_CLUSTER_CONFIG_NODES", "6");
                 envVars.put("REDIS_CLUSTER_TIMEOUT", "5000");
                 envVars.put("REDIS_CLUSTER_REQUIRE_FULL_COVERAGE", "no");
-                
-                // 로그 설정
                 envVars.put("REDIS_LOGLEVEL", "notice");
                 envVars.put("REDIS_DAEMONIZE", "no");
-                
-                // Redis 서버 설정
-                envVars.put("REDIS_SERVER_ARGS", "--cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes");
+                envVars.put("REDIS_SERVER_ARGS",
+                        "--cluster-enabled yes --cluster-config-file nodes.conf "
+                                + "--cluster-node-timeout 5000 --appendonly yes");
             } else {
-                // 단일 Redis 인스턴스 설정
                 envVars.put("REDIS_PORT", "6379");
                 envVars.put("REDIS_BIND", "0.0.0.0");
                 envVars.put("REDIS_PROTECTED_MODE", "no");
                 envVars.put("REDIS_DAEMONIZE", "no");
             }
         } else if (lowerImageName.contains("mariadb") || lowerImageName.contains("mysql")) {
-            // MariaDB/MySQL 환경변수 설정
             envVars.put("MYSQL_ROOT_PASSWORD", "password");
             envVars.put("MYSQL_DATABASE", "testdb");
             envVars.put("MYSQL_USER", "testuser");
             envVars.put("MYSQL_PASSWORD", "testpass");
         }
-        
         return envVars;
     }
-    
-    /**
-     * Docker Hub 이미지명을 Nexus 이미지명으로 변환합니다.
-     * 현재는 Docker Hub에서 직접 pull하므로 사용하지 않음.
-     */
-    @Deprecated
-    private String convertToNexusImageName(String dockerHubImageName) {
-        // 이미 Nexus URL이 포함된 경우 그대로 반환
-        if (dockerHubImageName.contains(nexusConfig.getDockerRegistryUrl())) {
-            log.info("Image already contains Nexus URL, using as-is: {}", dockerHubImageName);
-            return dockerHubImageName;
-        }
-        
-        // docker.io/ 제거
-        String cleanImageName = dockerHubImageName.replaceFirst("^docker\\.io/", "");
-        
-        // Nexus 레지스트리 URL과 Docker 레포지토리명을 사용하여 변환
-        String nexusImageName = nexusConfig.getDockerRegistryUrl() + "/" + 
-                               nexusConfig.getDockerRepository() + "/" + 
-                               cleanImageName;
-        
-        log.info("Converted image name: {} -> {}", dockerHubImageName, nexusImageName);
-        return nexusImageName;
-    }
 
-    public String getDockerContainerStatus(String host, String containerId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            return dockerClient.inspectContainerCmd(containerId)
-                    .exec()
-                    .getState()
-                    .getStatus();
-        } catch (Exception e) {
-            log.error("Error getting Docker container status", e);
-            return "ERROR";
-        }
-    }
-
-    public String stopDockerContainer(String host, String containerId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            dockerClient.stopContainerCmd(containerId).exec();
-            return "Container stopped successfully";
-        } catch (Exception e) {
-            log.error("Error stopping Docker container", e);
-            throw new RuntimeException("Failed to stop Docker container: " + e.getMessage(), e);
-        }
-    }
-
-    public String startDockerContainer(String host, String containerId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            dockerClient.startContainerCmd(containerId).exec();
-            return "Container started successfully";
-        } catch (Exception e) {
-            log.error("Error starting Docker container", e);
-            throw new RuntimeException("Failed to start Docker container: " + e.getMessage(), e);
-        }
-    }
-
-    public String removeDockerContainer(String host, String containerId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            dockerClient.removeContainerCmd(containerId)
-                .withForce(true)
-                .withRemoveVolumes(true)
-                .exec();
-            return "Container removed successfully";
-        } catch (NotFoundException e) {
-            log.warn("Docker container already removed: {}", containerId);
-            return "Container already removed";
-        } catch (Exception e) {
-            log.error("Error removing Docker container", e);
-            throw new RuntimeException("Failed to remove Docker container: " + e.getMessage(), e);
-        }
-    }
-
-    public String restartDockerContainer(String host, String containerId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            dockerClient.restartContainerCmd(containerId).exec();
-            return "Container restarted successfully";
-        } catch (Exception e) {
-            log.error("Error restarting Docker container", e);
-            throw new RuntimeException("Failed to restart Docker container: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Redis 클러스터를 자동으로 구성합니다.
-     */
-    private void configureRedisCluster(DockerClient dockerClient, String containerId, List<String> vmPublicIps, int vmIndex) {
-        try {
-            log.info("Configuring Redis cluster for container: {}", containerId);
-            
-            // 첫 번째 노드인 경우에만 클러스터 구성
-            if (vmIndex == 0) {
-                // 다른 노드들과 클러스터 구성
-                for (int i = 1; i < vmPublicIps.size(); i++) {
-                    String otherNodeIp = vmPublicIps.get(i);
-                    log.info("Adding node {} to cluster", otherNodeIp);
-                    
-                    // 클러스터 노드 추가 명령 실행
-                    String[] clusterMeetCmd = {"redis-cli", "-h", "localhost", "-p", "6379", "cluster", "meet", otherNodeIp, "6379"};
-                    dockerClient.execCreateCmd(containerId)
-                        .withCmd(clusterMeetCmd)
-                        .withAttachStdout(true)
-                        .withAttachStderr(true)
-                        .exec();
-                }
-                
-                // 클러스터 슬롯 할당
-                String[] clusterSlotsCmd = {"redis-cli", "-h", "localhost", "-p", "6379", "cluster", "addslots", "0", "1", "2", "3", "4", "5"};
-                dockerClient.execCreateCmd(containerId)
-                    .withCmd(clusterSlotsCmd)
-                    .withAttachStdout(true)
-                    .withAttachStderr(true)
-                    .exec();
-                    
-                log.info("Redis cluster configuration completed");
-            }
-        } catch (Exception e) {
-            log.error("Failed to configure Redis cluster", e);
-        }
-    }
-
-    public boolean isContainerRunning(String host, String containerId) {
-        try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-            return isContainerRunning(dockerClient, containerId);
-        } catch (Exception e) {
-            log.error("Error checking if container is running", e);
-            return false;
-        }
-    }
-
-    private boolean isContainerRunning(DockerClient dockerClient, String containerId) {
-        List<Container> containers = dockerClient.listContainersCmd()
-                .withShowAll(true)
-                .exec();
-        return containers.stream()
-                .anyMatch(container -> container.getId().equals(containerId) && "running".equalsIgnoreCase(container.getState()));
+    private record PortMapping(int hostPort, int containerPort) {
     }
 }

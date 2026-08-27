@@ -29,6 +29,7 @@ import kr.co.mcmp.softwarecatalog.application.repository.AbnormalEventRepository
 import kr.co.mcmp.softwarecatalog.application.repository.OperationHistoryRepository;
 import kr.co.mcmp.softwarecatalog.application.repository.ResourceMetricsHistoryRepository;
 import kr.co.mcmp.softwarecatalog.docker.model.ContainerHealthInfo;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -42,7 +43,7 @@ public class DockerMonitoringService {
     private final ResourceMetricsHistoryRepository metricsHistoryRepository;
     private final AbnormalEventRepository abnormalEventRepository;
     private final OperationHistoryRepository operationHistoryRepository;
-    private final DockerClientFactory dockerClientFactory;
+    private final DockerOperationService dockerOperationService;
     private final ContainerStatsCollector containerStatsCollector;
     private final DockerLogCollector dockerLogCollector;
 
@@ -115,11 +116,14 @@ public class DockerMonitoringService {
             return;
         }
 
-        try (var dockerClient = dockerClientFactory.getDockerClient(deployment.getPublicIp())) {
-            log.info("Docker client connected successfully to: {}", deployment.getPublicIp());
-
+        try {
+            DockerTarget target = new DockerTarget(
+                    deployment.getNamespace(), deployment.getMciId(), deployment.getVmId());
             String catalogName = deployment.getCatalog().getName().toLowerCase().replaceAll("\\s+", "-");
-            String containerId = containerStatsCollector.getContainerId(dockerClient, catalogName);
+            String containerId = firstNonBlank(status.getContainerId(), deployment.getContainerId());
+            if (containerId == null) {
+                containerId = dockerOperationService.getContainerId(target, catalogName);
+            }
 
             if (containerId == null) {
                 log.warn("Container not found for catalog: {} on VM: {}", catalogName, deployment.getVmId());
@@ -128,8 +132,10 @@ public class DockerMonitoringService {
                 applicationStatusRepository.save(status);
                 return;
             }
+            status.setContainerId(containerId);
+            deployment.setContainerId(containerId);
 
-            ContainerHealthInfo healthInfo = containerStatsCollector.collectContainerStats(dockerClient, containerId);
+            ContainerHealthInfo healthInfo = containerStatsCollector.collectContainerStats(target, containerId);
             log.info("Health info collected - Status: {}, CPU: {}%, Memory: {}%, OOM: {}, Restarts: {}",
                     healthInfo.getStatus(), healthInfo.getCpuUsage(), healthInfo.getMemoryUsage(),
                     healthInfo.getOomKilled(), healthInfo.getRestartCount());
@@ -145,7 +151,7 @@ public class DockerMonitoringService {
 
             if (isThresholdExceeded(deployment.getCatalog(), healthInfo)) {
                 log.warn("Resource thresholds exceeded for deployment: {}", deployment.getId());
-                dockerLogCollector.collectAndSaveLogs(deployment.getId(), deployment.getVmId(), containerId);
+                dockerLogCollector.collectAndSaveLogs(deployment.getId(), target, containerId);
             }
 
             applicationStatusRepository.save(status);
@@ -156,6 +162,18 @@ public class DockerMonitoringService {
             status.setCheckedAt(LocalDateTime.now());
             applicationStatusRepository.save(status);
         }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /**
@@ -273,6 +291,9 @@ public class DockerMonitoringService {
         status.setNamespace(deployment.getNamespace());
         status.setMciId(deployment.getMciId());
         status.setVmId(deployment.getVmId());
+        if (deployment.getContainerId() != null && !deployment.getContainerId().isBlank()) {
+            status.setContainerId(deployment.getContainerId());
+        }
         status.setClusterName(deployment.getClusterName());
         status.setDeploymentHistoryId(deployment.getId());
         status.setPublicIp(deployment.getPublicIp());

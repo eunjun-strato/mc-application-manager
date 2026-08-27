@@ -33,6 +33,7 @@ import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
 import kr.co.mcmp.softwarecatalog.application.config.NexusConfig;
 import kr.co.mcmp.softwarecatalog.docker.model.ContainerDeployResult;
 import kr.co.mcmp.softwarecatalog.docker.model.DockerHostResourceInfo;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 import kr.co.mcmp.softwarecatalog.docker.service.DockerOperationService;
 import kr.co.mcmp.softwarecatalog.docker.service.DockerSetupService;
 import kr.co.mcmp.softwarecatalog.users.Entity.User;
@@ -194,6 +195,7 @@ public class DockerDeploymentService implements DeploymentService {
                     if (result.isSuccess()) {
                         successfulVms.add(vmId);
                         vmHistory.setStatus("SUCCESS");
+                        vmHistory.setContainerId(result.getContainerId());
                         vmHistory.setResourceType(request.getResourceType());
                         vmHistory.setUpdatedAt(LocalDateTime.now());
                         deploymentHistoryRepository.save(vmHistory);
@@ -204,7 +206,8 @@ public class DockerDeploymentService implements DeploymentService {
                         
                         // 성공한 VM의 ApplicationStatus 생성
                         applicationHistoryService.createApplicationStatusForVm(
-                            vmHistory, vmId, vmAccessInfo.getPublicIP(), servicePort, "SUCCESS", user);
+                            vmHistory, vmId, vmAccessInfo.getPublicIP(), servicePort, "SUCCESS", user,
+                            result.getContainerId());
                     } else {
                         failedVms.add(vmId + " (" + result.getErrorMessage() + ")");
                         vmHistory.setStatus("FAILED");
@@ -327,7 +330,8 @@ public class DockerDeploymentService implements DeploymentService {
                         
                         // 성공한 VM의 ApplicationStatus 생성
                         applicationHistoryService.createApplicationStatusForVm(
-                            history, vmId, vmAccessInfo.getPublicIP(), servicePort, "SUCCESS", user);
+                            history, vmId, vmAccessInfo.getPublicIP(), servicePort, "SUCCESS", user,
+                            result.getContainerId());
                     } else {
                         failedVms.add(vmId + " (" + result.getErrorMessage() + ")");
                         String errorMessage = createMessage(request, MessageType.ERROR, vmId, result.getErrorMessage());
@@ -397,18 +401,24 @@ public class DockerDeploymentService implements DeploymentService {
             }
             
             // Docker 컨테이너 실행 (클러스터링 지원)
+            DockerTarget dockerTarget = new DockerTarget(
+                    request.getNamespace(), request.getMciId(), vmId);
             ContainerDeployResult deployResult = dockerOperationService.runDockerContainer(
-                vmAccessInfo.getPublicIP(),
-                convertToMap(deployParams),
+                dockerTarget,
+                convertToMap(deployParams, catalog.getId(), history.getId()),
                 vmPublicIps,
-                vmIndex,
-                vmId
+                vmIndex
             );
             
             String containerId = deployResult.getContainerId();
             if (containerId != null && !containerId.isEmpty()) {
-                boolean isRunning = dockerOperationService.isContainerRunning(vmAccessInfo.getPublicIP(), containerId);
+                boolean isRunning = dockerOperationService.isContainerRunning(dockerTarget, containerId);
                 if (isRunning) {
+                    history.setContainerId(containerId);
+                    history.setVmId(vmId);
+                    history.setPublicIp(vmAccessInfo.getPublicIP());
+                    history.setUpdatedAt(LocalDateTime.now());
+                    deploymentHistoryRepository.save(history);
                     log.info("Async deployment successful for VM: {} with container: {}", vmId, containerId);
                     return new DeploymentResult(vmId, true, containerId, null);
                 } else {
@@ -622,11 +632,11 @@ public class DockerDeploymentService implements DeploymentService {
     }
 
     private DockerHostResourceInfo resolveDockerHostResourceInfo(DeploymentHistory history, VmAccessInfo vmInfo) {
-        String dockerHost = firstNonBlank(history.getPublicIp(), vmInfo != null ? vmInfo.getPublicIP() : null);
-        if (dockerHost == null) {
+        if (history.getNamespace() == null || history.getMciId() == null || history.getVmId() == null) {
             return null;
         }
-        return dockerOperationService.getHostResourceInfo(dockerHost);
+        return dockerOperationService.getHostResourceInfo(new DockerTarget(
+                history.getNamespace(), history.getMciId(), history.getVmId()));
     }
 
     private VmAccessInfo resolveVmInfo(DeploymentRequest request, DeploymentHistory history) {
@@ -738,16 +748,19 @@ public class DockerDeploymentService implements DeploymentService {
     private static class DeploymentResult {
         private final String vmId;
         private final boolean success;
+        private final String containerId;
         private final String errorMessage;
         
         public DeploymentResult(String vmId, boolean success, String containerId, String errorMessage) {
             this.vmId = vmId;
             this.success = success;
+            this.containerId = containerId;
             this.errorMessage = errorMessage;
         }
         
         public String getVmId() { return vmId; }
         public boolean isSuccess() { return success; }
+        public String getContainerId() { return containerId; }
         public String getErrorMessage() { return errorMessage; }
     }
     
@@ -846,14 +859,20 @@ public class DockerDeploymentService implements DeploymentService {
         return nexusConfig.getImageUrlBySourceType(imageName, imageTag, "DOCKERHUB");
     }
     
-    private Map<String, String> convertToMap(DeploymentParameters params) {
+    private Map<String, String> convertToMap(
+            DeploymentParameters params, Long catalogId, Long deploymentId) {
         Map<String, String> map = new java.util.HashMap<>();
         map.put("name", params.getName());
         map.put("image", params.getImage());
         map.put("portBindings", params.getPortBindings());
         map.put("debugKeepAlive", String.valueOf(Boolean.TRUE.equals(params.getDebugKeepAlive())));
+        if (catalogId != null) {
+            map.put("catalogId", String.valueOf(catalogId));
+        }
+        if (deploymentId != null) {
+            map.put("deploymentId", String.valueOf(deploymentId));
+        }
         return map;
     }
 }
-
 
