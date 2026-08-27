@@ -49,8 +49,8 @@
                     </div>
                     <div class="col-md-3">
                       <strong class="me-2">Health Check:</strong> 
-                      <span :class="applicationDetail.healthCheck ? 'text-success' : 'text-danger'">
-                        {{ applicationDetail.healthCheck ? 'Healthy' : 'Unhealthy' }}
+                      <span :class="healthDisplay.className">
+                        {{ healthDisplay.label }}
                       </span>
                     </div>
                   </div>
@@ -518,6 +518,7 @@ import {
 } from '@/api/softwareCatalog'
 import { toAbsoluteUrl } from '@/common/url'
 import {
+  getApplicationHealthDisplay,
   getApplicationStatusBadgeClass,
   getApplicationStatusLabel
 } from '../applicationStatusDisplay'
@@ -663,6 +664,11 @@ const currentRuntimeStatus = computed(() => {
     applicationDetail.value?.status
   )
 })
+
+const healthDisplay = computed(() => getApplicationHealthDisplay(
+  applicationDetail.value?.healthCheck,
+  currentRuntimeStatus.value
+))
 
 const hasUninstallAfterDeployment = computed(() => {
   const deployedAt = parseDateTime(applicationDetail.value?.executedAt)

@@ -1,8 +1,9 @@
 package kr.co.mcmp.softwarecatalog.kubernetes.service;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -79,6 +80,7 @@ public class KubernetesMonitoringService {
     private final K8sAutoscaleService k8sAutoscaleService;
     private final CbtumblebugRestApi cbtumblebugRestApi;
     private final RabbitMqAlertService rabbitMqAlertService;
+    private final KubernetesMetricsApiService kubernetesMetricsApiService;
 
     /** Last snapshot timestamp per deployment ID — controls the 10-minute interval */
     private final java.util.concurrent.ConcurrentHashMap<Long, LocalDateTime> lastSnapshotTime =
@@ -126,6 +128,9 @@ public class KubernetesMonitoringService {
     @Value("${k8s.autoscaling.sample-retention-hours:24}")
     private int autoscaleSampleRetentionHours;
 
+    @Value("${k8s.monitoring.health-startup-grace-seconds:180}")
+    private long healthStartupGraceSeconds;
+
     @Value("${rabbitmq.alert.slack-channel-id}")
     private String defaultSlackChannelId;
     @Value("${rabbitmq.alert.email}")
@@ -150,8 +155,8 @@ public class KubernetesMonitoringService {
 
             try (KubernetesClient client = clientFactory.getClient(namespace, clusterName)) {
 
-                if (!isMetricsServerInstalled(client)) {
-                    log.debug("metrics-server is not installed. Pod status monitoring will continue without CPU/memory metrics.");
+                if (!isMetricsApiAvailable(client)) {
+                    log.debug("metrics.k8s.io API is unavailable. Pod status monitoring will continue without CPU/memory metrics.");
                 }
 
                 updateApplicationStatus(deployment, client);
@@ -174,8 +179,8 @@ public class KubernetesMonitoringService {
             String clusterName = deployment.getClusterName();
 
             try (KubernetesClient client = clientFactory.getClient(namespace, clusterName)) {
-                if (!isMetricsServerInstalled(client)) {
-                    log.debug("Skipping autoscale sample collection because metrics-server is not installed: deployment={}", deployment.getId());
+                if (!isMetricsApiAvailable(client)) {
+                    log.debug("Skipping autoscale sample collection because metrics.k8s.io API is unavailable: deployment={}", deployment.getId());
                     continue;
                 }
 
@@ -540,6 +545,10 @@ public class KubernetesMonitoringService {
         status.setNetworkIn((Double) resourceUsage.get("networkIn"));
         status.setNetworkOut((Double) resourceUsage.get("networkOut"));
         status.setStatus((String) resourceUsage.get("status"));
+        status.setIsHealthCheck(KubernetesPodHealthEvaluator.evaluate(
+                pods,
+                Duration.ofSeconds(Math.max(healthStartupGraceSeconds, 0L)),
+                Instant.now()));
         status.setServicePort((Integer) resourceUsage.get("port"));
         status.setCheckedAt(LocalDateTime.now());
         status.setClusterName(clusterName);
@@ -767,24 +776,6 @@ public class KubernetesMonitoringService {
             }
         }
         lastRestartCount.put(deploymentId, totalRestarts);
-    }
-
-    private void checkMetricsServerStatus(KubernetesClient client) {
-        Deployment metricsServer = client.apps().deployments()
-                .inNamespace("kube-system")
-                .withName("metrics-server")
-                .get();
-
-        if (metricsServer == null) {
-            log.error("Metrics Server not found. Please install it.");
-        } else {
-            Integer readyReplicas = metricsServer.getStatus().getReadyReplicas();
-            if (readyReplicas == null || readyReplicas == 0) {
-                log.error("Metrics Server is not ready. Check its status and logs.");
-            } else {
-                log.debug("Metrics Server is running with {} ready replicas", readyReplicas);
-            }
-        }
     }
 
     private Map<String, Object> getResourceUsagePercentage(KubernetesClient client, String namespace, String appName, String lookupName, List<Pod> pods, long runningPods, long pendingPods, long failedPods) {
@@ -1306,57 +1297,14 @@ public class KubernetesMonitoringService {
         }
     }
 
-    private boolean isMetricsServerInstalled(KubernetesClient client) {
+    private boolean isMetricsApiAvailable(KubernetesClient client) {
         try {
-            return client.apps().deployments().inNamespace("kube-system").withName("metrics-server").get() != null;
+            return kubernetesMetricsApiService.check(client)
+                    == KubernetesMetricsApiService.Availability.AVAILABLE;
         } catch (Exception e) {
-            log.debug("Unable to check metrics-server installation. Continuing without CPU/memory metrics.", e);
+            log.warn("Unable to query metrics.k8s.io API. Continuing without CPU/memory metrics: {}", e.getMessage());
             return false;
         }
-    }
-
-    private void installMetricsServer(KubernetesClient client) throws IOException {
-        log.debug("Metrics Server not found. Installing...");
-
-        String metricsServerYaml = "";
-        try {
-            metricsServerYaml = downloadMetricsServerYaml();
-        } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
-        }
-        client.resourceList(metricsServerYaml).createOrReplace();
-
-        log.debug("Metrics Server installation completed");
-        try {
-            waitForMetricsServerReady(client);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private String downloadMetricsServerYaml() throws IOException, InterruptedException {
-        String url = "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml";
-        Process process = Runtime.getRuntime().exec("curl -s -L " + url);
-        process.waitFor();
-        return new String(process.getInputStream().readAllBytes());
-    }
-
-    private void waitForMetricsServerReady(KubernetesClient client) throws InterruptedException {
-        log.debug("Waiting for Metrics Server to be ready...");
-        int maxAttempts = 30;
-        int attempt = 0;
-        while (attempt < maxAttempts) {
-            Deployment metricsServer = client.apps().deployments().inNamespace("kube-system").withName("metrics-server")
-                    .get();
-            if (metricsServer != null && metricsServer.getStatus().getReadyReplicas() != null
-                    && metricsServer.getStatus().getReadyReplicas() > 0) {
-                log.debug("Metrics Server is ready");
-                return;
-            }
-            Thread.sleep(10000); // 10초 대기
-            attempt++;
-        }
-        log.warn("Metrics Server did not become ready within the expected time");
     }
     
     /**

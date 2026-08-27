@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
 
 import kr.co.mcmp.softwarecatalog.application.model.HelmChart;
@@ -15,7 +16,6 @@ import org.yaml.snakeyaml.Yaml;
 import com.marcnuri.helm.Release;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext;
 import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
 import kr.co.mcmp.ape.cbtumblebug.dto.K8sClusterDto;
 import kr.co.mcmp.softwarecatalog.CatalogRepository;
@@ -49,6 +49,7 @@ public class HelmChartService {
     private final ReleaseNameGenerator releaseNameGenerator;
     private final CatalogRepository catalogRepository;
     private final KubernetesStorageClassService kubernetesStorageClassService;
+    private final KubernetesMetricsApiService kubernetesMetricsApiService;
 
     public Release deployHelmChart(KubernetesClient client, String namespace, SoftwareCatalog catalog, String clusterName) {
         return deployHelmChart(client, namespace, catalog, catalog.getHelmChart(), clusterName);
@@ -287,8 +288,7 @@ public class HelmChartService {
             String providerName = clusterDto.getConnectionConfig().getProviderName();
             String kubeconfigYaml = kubeconfigResolver.getKubeconfigYaml(namespace, clusterName);
             
-            tempKubeconfigPath = Files.createTempFile("kubeconfig-", ".yaml");
-            Files.write(tempKubeconfigPath, kubeconfigYaml.getBytes());
+            tempKubeconfigPath = createTempKubeconfigFile(kubeconfigYaml);
 
             // 3. Helm repository 추가
             addHelmRepository(helmChart);
@@ -566,7 +566,15 @@ public class HelmChartService {
     }
 
     public Path createTempKubeconfigFile(String kubeconfigYaml) throws IOException {
-        Path tempFile = Files.createTempFile("kubeconfig", ".yaml");
+        Path tempFile;
+        try {
+            tempFile = Files.createTempFile(
+                    "kubeconfig",
+                    ".yaml",
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+        } catch (UnsupportedOperationException e) {
+            tempFile = Files.createTempFile("kubeconfig", ".yaml");
+        }
         Files.write(tempFile, kubeconfigYaml.getBytes(StandardCharsets.UTF_8));
         return tempFile;
     }
@@ -614,7 +622,7 @@ public class HelmChartService {
             tempKubeconfigPath = createTempKubeconfigFile(getKubeconfigForCluster(namespace, clusterName));
             ensureMetricsServer(client, tempKubeconfigPath);
         } catch (Exception e) {
-            throw new RuntimeException("metrics-server installation failed", e);
+            throw new RuntimeException("Kubernetes metrics API preparation failed", e);
         } finally {
             deleteTempFile(tempKubeconfigPath);
         }
@@ -644,17 +652,31 @@ public class HelmChartService {
     }
 
     private void ensureMetricsServer(KubernetesClient client, Path tempKubeconfigPath) {
-        if (isMetricsServerReady(client)) {
-            log.info("metrics-server is already ready.");
+        KubernetesMetricsApiService.Availability availability = kubernetesMetricsApiService.check(client);
+        if (availability == KubernetesMetricsApiService.Availability.AVAILABLE) {
+            log.info("metrics.k8s.io API is already available. Reusing the cluster-provided metrics service.");
             return;
         }
 
-        if (!isMetricsServerReleaseInstalled(tempKubeconfigPath)) {
-            installMetricsServerWithHelm(tempKubeconfigPath);
-        } else {
+        if (isMetricsServerReleaseInstalled(tempKubeconfigPath)) {
             log.info("metrics-server Helm release already exists. Waiting for readiness.");
+            waitForMetricsServerReady(client);
+            return;
         }
 
+        if (availability == KubernetesMetricsApiService.Availability.TEMPORARILY_UNAVAILABLE) {
+            log.info("metrics.k8s.io API is registered but temporarily unavailable. Waiting without installing a duplicate metrics-server.");
+            waitForMetricsServerReady(client);
+            return;
+        }
+
+        if (hasExistingMetricsServerResources(client)) {
+            throw new IllegalStateException(
+                    "Existing non-Helm metrics-server resources were found while metrics.k8s.io is unavailable. "
+                            + "Refusing to install a duplicate release.");
+        }
+
+        installMetricsServerWithHelm(tempKubeconfigPath);
         waitForMetricsServerReady(client);
     }
 
@@ -663,8 +685,23 @@ public class HelmChartService {
             String releaseList = runHelmListCliInNamespace(METRICS_SERVER_NAMESPACE, tempKubeconfigPath);
             return releaseList != null && releaseList.contains("\"name\":\"" + METRICS_SERVER_RELEASE + "\"");
         } catch (Exception e) {
-            log.info("Failed to check metrics-server Helm release: {}", e.getMessage());
-            return false;
+            throw new IllegalStateException("Unable to verify the existing metrics-server Helm release", e);
+        }
+    }
+
+    private boolean hasExistingMetricsServerResources(KubernetesClient client) {
+        try {
+            return client.services()
+                            .inNamespace(METRICS_SERVER_NAMESPACE)
+                            .withName(METRICS_SERVER_RELEASE)
+                            .get() != null
+                    || client.apps()
+                            .deployments()
+                            .inNamespace(METRICS_SERVER_NAMESPACE)
+                            .withName(METRICS_SERVER_RELEASE)
+                            .get() != null;
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to inspect existing metrics-server resources", e);
         }
     }
 
@@ -713,53 +750,8 @@ public class HelmChartService {
     }
 
     private boolean isMetricsServerReady(KubernetesClient client) {
-        try {
-            boolean metricsApiAvailable = isMetricsApiAvailable(client);
-            var deployment = client.apps().deployments()
-                    .inNamespace(METRICS_SERVER_NAMESPACE)
-                    .withName(METRICS_SERVER_RELEASE)
-                    .get();
-            if (deployment == null) {
-                if (metricsApiAvailable) {
-                    log.info("metrics.k8s.io API is already available without Helm-managed metrics-server deployment.");
-                    return true;
-                }
-                return false;
-            }
-
-            Integer readyReplicas = deployment != null && deployment.getStatus() != null
-                    ? deployment.getStatus().getReadyReplicas()
-                    : null;
-            Integer desiredReplicas = deployment != null && deployment.getSpec() != null
-                    ? deployment.getSpec().getReplicas()
-                    : null;
-            boolean deploymentReady = readyReplicas != null
-                    && readyReplicas > 0
-                    && (desiredReplicas == null || readyReplicas >= desiredReplicas);
-
-            return deploymentReady && metricsApiAvailable;
-        } catch (Exception e) {
-            log.debug("metrics-server readiness check failed: {}", e.getMessage());
-            return false;
-        }
-    }
-
-    private boolean isMetricsApiAvailable(KubernetesClient client) {
-        ResourceDefinitionContext context = new ResourceDefinitionContext.Builder()
-                .withGroup("metrics.k8s.io")
-                .withVersion("v1beta1")
-                .withKind("NodeMetrics")
-                .withPlural("nodes")
-                .withNamespaced(false)
-                .build();
-
-        try {
-            client.genericKubernetesResources(context).list();
-            return true;
-        } catch (Exception e) {
-            log.debug("metrics.k8s.io API is not ready yet: {}", e.getMessage());
-            return false;
-        }
+        return kubernetesMetricsApiService.check(client)
+                == KubernetesMetricsApiService.Availability.AVAILABLE;
     }
 
     /**
