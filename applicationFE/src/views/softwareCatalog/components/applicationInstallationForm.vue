@@ -10,6 +10,15 @@
         </div>
         <div class="modal-body" style="max-height: calc(100vh - 200px);overflow-y: auto;">
 
+          <div v-if="hasProjectContext" class="alert alert-info py-2" role="status">
+            Deployment targets are scoped to
+            <strong>{{ projectContextLabel }}</strong>.
+          </div>
+
+          <div v-if="projectScopeError" class="alert alert-warning py-2" role="alert">
+            {{ projectScopeError }}
+          </div>
+
           <div class="mb-3">
             <label class="form-label">Target Infra</label>
             <p 
@@ -57,14 +66,15 @@
               <template v-if="nsIdList.length > 0">
                 <select 
                   class="form-select" 
-                  id="namesapce" 
+                  id="vm-namespace"
                   v-model="selectNsId"
+                  :disabled="isNamespaceLocked"
                   @change="onChangeNsId">
                   <option 
                     v-for="ns in nsIdList" 
-                    :value=ns.name 
-                    :key="ns.name">
-                    {{ ns.name }}
+                    :value="getNamespaceValue(ns)"
+                    :key="getNamespaceValue(ns)">
+                    {{ ns.name || ns.id }}
                   </option>
                 </select>
               </template>
@@ -72,11 +82,10 @@
               <template v-else>
                 <select 
                   class="form-select" 
-                  id="namesapce" 
-                  v-model="selectNsId" 
-                  @change="onChangeNsId">
-                  <option value="selectNsId">
-                    {{ selectNsId }}
+                  id="vm-namespace-empty"
+                  disabled>
+                  <option value="">
+                    No namespace available
                   </option>
                 </select>
               </template>
@@ -95,10 +104,11 @@
                 Remove the application and associated resources from the infra</p>
               <select 
                 class="form-select" 
-                id="mci-name" 
+                id="vm-mci"
                 :disabled="selectNsId == ''" 
                 v-model="selectMci"
                 @change="onChangeMci">
+                <option v-if="mciList.length === 0" value="">No infra available</option>
                 <option 
                   v-for="mci in mciList" 
                   :value="mci.id || mci.name"
@@ -117,7 +127,7 @@
                 Select the virtual machine (VM) within the chosen multi-cloud infrastructure where the application will be deployed</p>
               <select 
                 class="form-select" 
-                id="mci-name" 
+                id="vm-name"
                 :disabled="selectMci == ''" 
                 v-model="selectVm"
                 @change="onSelectVm">
@@ -210,14 +220,15 @@
               <template v-if="nsIdList.length > 0">
                 <select 
                   class="form-select" 
-                  id="namesapce" 
+                  id="k8s-namespace"
                   v-model="selectNsId" 
+                  :disabled="isNamespaceLocked"
                   @change="onSelectNamespace">
                   <option 
                     v-for="ns in nsIdList" 
-                    :value=ns.name 
-                    :key="ns.name">
-                    {{ ns.name }}
+                    :value="getNamespaceValue(ns)"
+                    :key="getNamespaceValue(ns)">
+                    {{ ns.name || ns.id }}
                   </option>
                 </select>
               </template>
@@ -225,12 +236,10 @@
               <template v-else>
                 <select 
                   class="form-select" 
-                  id="namesapce" 
-                  v-model="selectNsId" 
-                  @change="onChangeNsId">
-                  <option 
-                    value="selectNsId">
-                    {{ selectNsId }}
+                  id="k8s-namespace-empty"
+                  disabled>
+                  <option value="">
+                    No namespace available
                   </option>
                 </select>
               </template>
@@ -248,15 +257,16 @@
 
               <select 
                 class="form-select" 
-                id="mci-name" 
+                id="k8s-cluster"
                 :disabled="selectNsId == ''" 
                 v-model="selectCluster"
                 @change="onChangeCluster">
+                <option v-if="clusterList.length === 0" value="">No cluster available</option>
                 <option 
                   v-for="cluster in clusterList" 
-                  :value="cluster.name"
-                  :key="cluster.name">
-                  {{ cluster.name }}
+                  :value="getClusterValue(cluster)"
+                  :key="getClusterValue(cluster)">
+                  {{ cluster.name || cluster.id }}
                 </option>
               </select>
             </div>
@@ -567,7 +577,7 @@
               v-if="modalTitle == 'Application Installation'" 
               class="btn btn-danger ms-auto me-1" 
               @click="specCheck" 
-              :disabled="!specCheckFlag">
+              :disabled="!specCheckFlag || Boolean(projectScopeError)">
               Spec Check
             </button>
             <button 
@@ -605,6 +615,58 @@ const userStore = useUserStore()
 const props = defineProps<Props>()
 const modalTitle = computed(() => props.title);
 
+const normalizeScopeValues = (value: unknown): string[] => {
+  const values = Array.isArray(value) ? value : [value]
+
+  return values
+    .flatMap((item) => typeof item === 'string' ? item.split(',') : [item])
+    .map((item: any) => String(item?.id || item?.name || item || '').trim())
+    .filter(Boolean)
+}
+
+const firstScopeValue = (...values: unknown[]) => {
+  for (const value of values) {
+    const normalized = normalizeScopeValues(value)
+    if (normalized.length > 0) return normalized[0]
+  }
+  return ''
+}
+
+const projectInfo = computed(() => userStore.projectInfo || {})
+const workspaceInfo = computed(() => userStore.workspaceInfo || {})
+const projectNsId = computed(() => firstScopeValue(
+  projectInfo.value.ns_id,
+  projectInfo.value.nsId
+))
+const projectMciIds = computed(() => normalizeScopeValues(
+  projectInfo.value.mci_ids
+    ?? projectInfo.value.mciIds
+    ?? projectInfo.value.mci_id
+    ?? projectInfo.value.mciId
+))
+const projectClusterIds = computed(() => normalizeScopeValues(
+  projectInfo.value.cluster_ids
+    ?? projectInfo.value.clusterIds
+    ?? projectInfo.value.cluster_id
+    ?? projectInfo.value.clusterId
+))
+const hasProjectContext = computed(() => Boolean(
+  firstScopeValue(projectInfo.value.id, projectInfo.value.name, projectNsId.value)
+))
+const isNamespaceLocked = computed(() => hasProjectContext.value && Boolean(projectNsId.value))
+const projectContextLabel = computed(() => {
+  const workspace = firstScopeValue(workspaceInfo.value.name, workspaceInfo.value.id)
+  const project = firstScopeValue(projectInfo.value.name, projectInfo.value.id)
+  return [workspace, project].filter(Boolean).join(' / ') || 'the selected project'
+})
+const projectContextKey = computed(() => JSON.stringify([
+  firstScopeValue(workspaceInfo.value.id, workspaceInfo.value.name),
+  firstScopeValue(projectInfo.value.id, projectInfo.value.name),
+  projectNsId.value,
+  projectMciIds.value,
+  projectClusterIds.value
+]))
+
 const infraList = ref([] as any)
 const nsIdList = ref([] as any)
 const mciList = ref([] as any)
@@ -635,6 +697,35 @@ const selectCluster = ref("" as string)
 const inputApplications = ref("" as string)
 const inputServicePort = ref("" as string)
 const specCheckFlag = ref(true as boolean)
+const selectedCatalogIdx = ref(0 as number)
+const projectScopeError = ref('')
+let resourceLoadSequence = 0
+
+const getNamespaceValue = (namespace: any) => namespace?.id || namespace?.name || ''
+const getClusterValue = (cluster: any) => cluster?.name || cluster?.id || ''
+const matchesScope = (resource: any, allowedIds: string[]) => {
+  if (allowedIds.length === 0) return true
+
+  const resourceIds = [resource?.id, resource?.name, resource?.uid]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+  const normalizedAllowedIds = allowedIds.map((value) => value.toLowerCase())
+  return resourceIds.some((value) => normalizedAllowedIds.includes(value))
+}
+
+const clearTargetResources = () => {
+  nsIdList.value = []
+  mciList.value = []
+  vmList.value = []
+  originalVmList.value = []
+  clusterList.value = []
+  selectNsId.value = ''
+  selectMci.value = ''
+  selectVm.value = ''
+  selectedVmList.value = []
+  selectCluster.value = ''
+  projectScopeError.value = ''
+}
 
 // watch(modalTitle, async () => {
 //   await setInit();
@@ -675,6 +766,21 @@ watch(selectedStorageClass, () => {
   onChangeForm()
 })
 
+watch(projectContextKey, async (newContext, previousContext) => {
+  if (newContext === previousContext) return
+
+  resourceLoadSequence += 1
+  clearTargetResources()
+  inputApplications.value = ''
+  selectedCatalogIdx.value = 0
+  setSpecCheckFlag()
+
+  const modalElement = document.getElementById('install-form')
+  if (modalElement?.classList.contains('show')) {
+    await setInit()
+  }
+})
+
 // Handle deployment type changes
 watch(selectDeploymentType, () => {
   if (selectDeploymentType.value === "Standalone") {
@@ -700,12 +806,9 @@ onMounted(async () => {
 })
 
 const setInit = async () => {
+  const loadSequence = ++resourceLoadSequence
   selectInfra.value = "VM"
-  selectNsId.value = ""
-  selectMci.value = ""
-  selectVm.value = ""
-  selectedVmList.value = []
-  originalVmList.value = []
+  clearTargetResources()
   selectDeploymentType.value = "Standalone"
   hpaData.value = {
     hpaEnabled: false,
@@ -732,11 +835,13 @@ const setInit = async () => {
   storageClassLoadError.value = false
   selectedResourceType.value = "GENERAL_PURPOSE"
   inputServicePort.value = ""
+  inputApplications.value = ""
+  selectedCatalogIdx.value = 0
 
   setInfraList()
   setSpecCheckFlag()
 
-  await _getNsId()
+  await _getNsId(loadSequence)
 }
 
 const normalizeIngressHost = (host: string) => {
@@ -784,85 +889,118 @@ const setSpecCheckFlag = () => {
     specCheckFlag.value = true
 }
 
-const _getNsId = async () => {
-  await getNsInfo().then(async ({ data })=> {
-    console.log('## data ### : ', data)
-    nsIdList.value = data;
+const _getNsId = async (loadSequence = resourceLoadSequence) => {
+  try {
+    const { data } = await getNsInfo()
+    if (loadSequence !== resourceLoadSequence) return
 
-    if (nsIdList.value.length > 0) {
-      // Priority 1: nsId passed from props
-      if(!_.isEmpty(props.nsId)) {
-        selectNsId.value = props.nsId
+    const namespaces = Array.isArray(data) ? data : []
+    if (hasProjectContext.value) {
+      if (_.isEmpty(projectNsId.value)) {
+        projectScopeError.value = `Project "${projectContextLabel.value}" has no namespace mapping.`
+        return
       }
-      // Priority 2: projectInfo.ns_id from userStore (value saved in permission.ts)
-      else if (!_.isEmpty(userStore.getNsId())) {
-        const storeNsId = userStore.getNsId()
-        // Check if the ns_id exists in nsIdList
-        const foundNs = nsIdList.value.find((ns: any) => ns.name === storeNsId)
-        if (foundNs) {
-          selectNsId.value = storeNsId
-        } else {
-          // If not found, select the first item
-          selectNsId.value = nsIdList.value[0].name
-        }
+
+      const scopedNamespace = namespaces.find((namespace: any) =>
+        matchesScope(namespace, [projectNsId.value])
+      )
+      if (!scopedNamespace) {
+        projectScopeError.value = `Namespace "${projectNsId.value}" assigned to this project was not found.`
+        return
       }
-      // Priority 3: Default value (first item)
-      else {
-        selectNsId.value = nsIdList.value[0].name
-      }
+
+      nsIdList.value = [scopedNamespace]
+      selectNsId.value = getNamespaceValue(scopedNamespace)
+    } else {
+      nsIdList.value = namespaces
+      const preferredNsId = firstScopeValue(props.nsId)
+      const preferredNamespace = preferredNsId
+        ? namespaces.find((namespace: any) => matchesScope(namespace, [preferredNsId]))
+        : undefined
+      const selectedNamespace = preferredNamespace || namespaces[0]
+      selectNsId.value = selectedNamespace ? getNamespaceValue(selectedNamespace) : ''
     }
 
     if (!_.isEmpty(selectNsId.value)) {
-      if (selectInfra.value === 'VM')
-        await _getMciName()
-      else if(selectInfra.value === 'K8S')
-        await _getClusterName()
+      if (selectInfra.value === 'VM') await _getMciName(loadSequence)
+      else if (selectInfra.value === 'K8S') await _getClusterName(loadSequence)
     }
-  })
-  
-
+  } catch (error) {
+    if (loadSequence !== resourceLoadSequence) return
+    projectScopeError.value = 'Namespaces could not be loaded for the selected project.'
+  }
 }
 
-const _getMciName = async () => {
-  console.log(await getMciInfo(selectNsId.value))
-  await getMciInfo(selectNsId.value).then(async ({ data }) => {
-    mciList.value = data;
-    if(mciList.value.length > 0) {
-      selectMci.value = mciList.value[0].id || mciList.value[0].name;
-      await _getVmName();
+const _getMciName = async (loadSequence = resourceLoadSequence) => {
+  projectScopeError.value = ''
+  try {
+    const { data } = await getMciInfo(selectNsId.value)
+    if (loadSequence !== resourceLoadSequence) return
+
+    const allMcis = Array.isArray(data) ? data : []
+    mciList.value = allMcis.filter((mci: any) => matchesScope(mci, projectMciIds.value))
+    if (mciList.value.length > 0) {
+      selectMci.value = mciList.value[0].id || mciList.value[0].name
+      await _getVmName(loadSequence)
     } else {
-      selectMci.value = "";
-    }  
-  })
+      selectMci.value = ''
+      projectScopeError.value = projectMciIds.value.length > 0
+        ? `Infra "${projectMciIds.value.join(', ')}" assigned to this project was not found.`
+        : 'No VM infrastructure is available in this project.'
+    }
+  } catch (error) {
+    if (loadSequence !== resourceLoadSequence) return
+    projectScopeError.value = 'VM infrastructure could not be loaded for the selected project.'
+  }
 }
 
-const _getVmName = async () => {
+const _getVmName = async (loadSequence = resourceLoadSequence) => {
   const params = {
     nsId: selectNsId.value,
     mciId: selectMci.value
   }
-  await getVmInfo(params).then(({ data }) => {
-    originalVmList.value = data.node;
+  try {
+    const { data } = await getVmInfo(params)
+    if (loadSequence !== resourceLoadSequence) return
+
+    originalVmList.value = Array.isArray(data?.node) ? data.node : []
     // Set vmList excluding VMs that are already in selectedVmList
     vmList.value = originalVmList.value.filter((vm: any) => 
       !selectedVmList.value.includes(vm.id)
-    );
-    selectVm.value = "";
-  })
+    )
+    selectVm.value = ''
+    if (vmList.value.length === 0) {
+      projectScopeError.value = 'No VM is available in the infrastructure assigned to this project.'
+    }
+  } catch (error) {
+    if (loadSequence !== resourceLoadSequence) return
+    projectScopeError.value = 'VMs could not be loaded for the selected project.'
+  }
 }
 
-const _getClusterName = async () => {
-  await getClusterInfo(selectNsId.value).then(({ data }) => {
-    clusterList.value = data;
-    if(clusterList.value.length > 0) {
-      selectCluster.value = clusterList.value[0].name;
+const _getClusterName = async (loadSequence = resourceLoadSequence) => {
+  projectScopeError.value = ''
+  try {
+    const { data } = await getClusterInfo(selectNsId.value)
+    if (loadSequence !== resourceLoadSequence) return
+
+    const allClusters = Array.isArray(data) ? data : []
+    clusterList.value = allClusters.filter((cluster: any) => matchesScope(cluster, projectClusterIds.value))
+    if (clusterList.value.length > 0) {
+      selectCluster.value = getClusterValue(clusterList.value[0])
     } else {
-      selectCluster.value = "";
+      selectCluster.value = ''
+      projectScopeError.value = projectClusterIds.value.length > 0
+        ? `Cluster "${projectClusterIds.value.join(', ')}" assigned to this project was not found.`
+        : 'No Kubernetes cluster is available in this project.'
     }
     objectStorageData.value = getDefaultObjectStorageData()
     objectStorageCheckResult.value = null
-  })
-  await fetchStorageClasses()
+    await fetchStorageClasses()
+  } catch (error) {
+    if (loadSequence !== resourceLoadSequence) return
+    projectScopeError.value = 'Kubernetes clusters could not be loaded for the selected project.'
+  }
 }
 
 const fetchStorageClasses = async () => {
@@ -902,18 +1040,19 @@ const getInitialStorageClass = (items: any[]) => {
 
 const onChangeNsId = async () => {
   selectedVmList.value = [];
-  await _getMciName();
+  await _getMciName(resourceLoadSequence);
   onChangeForm();
 }
 
 const onChangeMci = async () => {
   selectedVmList.value = [];
-  await _getVmName();
+  projectScopeError.value = ''
+  await _getVmName(resourceLoadSequence);
   onChangeForm();
 }
 
 const onSelectNamespace = async () =>{
-  await _getClusterName();
+  await _getClusterName(resourceLoadSequence);
   onChangeForm();
 }
 
@@ -1051,6 +1190,11 @@ const runInstall = async () => {
 }
 
 const specCheck = async () => {
+  if (projectScopeError.value) {
+    toast.error(projectScopeError.value)
+    return
+  }
+
   if (selectInfra.value !== 'VM' && selectInfra.value !== 'K8S') {
     toast.error("Please Select Infra")
     return
@@ -1125,8 +1269,6 @@ const specCheckCallback = async () => {
 
   return result;
 }
-
-const selectedCatalogIdx = ref(0 as number)
 
 const selectedCatalogInfo = computed(() => {
   return catalogList.value.find((catalog) => catalog.id === selectedCatalogIdx.value)
@@ -1211,7 +1353,10 @@ const objectStorageCheckPassed = computed(() => {
 })
 
 const deployDisabled = computed(() => {
-  return specCheckFlag.value || !objectStorageCheckPassed.value || (storageClassRequired.value && !_.isEmpty(storageClassErrorMessage.value))
+  return Boolean(projectScopeError.value)
+    || specCheckFlag.value
+    || !objectStorageCheckPassed.value
+    || (storageClassRequired.value && !_.isEmpty(storageClassErrorMessage.value))
 })
 
 function getDefaultObjectStorageData(provider = selectedClusterProvider.value, enabled = objectStorageRequired.value) {

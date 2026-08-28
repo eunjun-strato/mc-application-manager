@@ -10,15 +10,40 @@
             <div class="col d-flex">
               <h2 class="page-title">Software Catalog</h2>
             </div>
-            <!-- Install Button relocated into header -->
+            <!-- Catalog management actions -->
             <div class="col-auto ms-auto">
-              <button 
-                class="btn btn-outline-primary d-none d-sm-inline-block" 
-                data-bs-toggle='modal' 
-                data-bs-target='#install-form'
-                @click="onClickDeploy('Application Installation')">
-                DEPLOY
-              </button>
+              <div
+                ref="manageMenuRef"
+                class="dropdown"
+                @keydown.esc.stop="closeManageMenu">
+                <button
+                  type="button"
+                  class="btn btn-outline-primary"
+                  :aria-expanded="manageMenuOpen"
+                  aria-haspopup="menu"
+                  @click="toggleManageMenu">
+                  Manage
+                </button>
+                <div
+                  class="dropdown-menu dropdown-menu-end"
+                  :class="{ show: manageMenuOpen }"
+                  role="menu">
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    @click="onClickDeploy('Application Installation')">
+                    Deploy
+                  </button>
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    @click="onClickRegister">
+                    Register
+                  </button>
+                </div>
+              </div>
             </div>
             <!-- New Button -->
             <!-- 
@@ -91,7 +116,7 @@
                     <!-- Catalog -->
                     <div class="tab-pane active show" id="tabs-catalog">
                       <div>
-                        <SoftwareCatalogList :nsId="nsId"/>
+                        <SoftwareCatalogList ref="softwareCatalogListRef" :nsId="nsId"/>
                       </div>
                     </div>
 
@@ -140,36 +165,72 @@ import ApplicationStatusList from '@/views/softwareCatalog/components/applicatio
 import SoftwareCatalogList from '@/views/softwareCatalog/components/softwareCatalogList.vue';
 import RepositoryList from '@/views/repository/RepositoryList.vue';
 import RepositoryDetail from '@/views/repository/RepositoryDetail.vue';
+import { Modal } from 'bootstrap';
 
 // ETC
-import { nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useUserStore } from '@/stores/user'
 
-// @ts-ignore
-import _ from 'lodash';
-
 const userinfo = useUserStore();
-const nsId = ref("" as string)
+const nsId = computed(() => userinfo.getNsId() || '')
 const modalTite = ref("" as string)
 const showRepositoryDetail = ref(false)
 const selectedRepositoryName = ref("")
 const applicationStatusListRef = ref<InstanceType<typeof ApplicationStatusList> | null>(null)
+const softwareCatalogListRef = ref<InstanceType<typeof SoftwareCatalogList> | null>(null)
+const manageMenuRef = ref<HTMLElement | null>(null)
+const manageMenuOpen = ref(false)
 
 /**
 * @Title Life Cycle
 * @Desc 컬럼 set Callback 함수 호출
 */
 onMounted(async () => {
-  nsId.value = userinfo.getNsId();
+  document.addEventListener('click', closeManageMenuOnOutsideClick)
 })
 
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeManageMenuOnOutsideClick)
+})
+
+const toggleManageMenu = () => {
+  manageMenuOpen.value = !manageMenuOpen.value
+}
+
+const closeManageMenu = () => {
+  manageMenuOpen.value = false
+}
+
+const closeManageMenuOnOutsideClick = (event: MouseEvent) => {
+  const target = event.target as Node | null
+  if (target && !manageMenuRef.value?.contains(target)) {
+    closeManageMenu()
+  }
+}
+
+const openModal = (modalId: string) => {
+  const modalElement = document.getElementById(modalId)
+  if (modalElement) {
+    Modal.getOrCreateInstance(modalElement).show()
+  }
+}
 
 /**
 * @Method onClickDeploy
 * @Desc If when you Application Install or Uninstall Action
 */
-const onClickDeploy = (value: string) => {
+const onClickDeploy = async (value: string) => {
+  closeManageMenu()
   modalTite.value = value
+  await nextTick()
+  openModal('install-form')
+}
+
+const onClickRegister = async () => {
+  closeManageMenu()
+  softwareCatalogListRef.value?.startRegistration()
+  await nextTick()
+  openModal('modal-wizard')
 }
 
 const onClickStatusTab = async () => {
