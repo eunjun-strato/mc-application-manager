@@ -2,8 +2,10 @@ package kr.co.mcmp.softwarecatalog.application.service.impl;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.io.BufferedReader;
@@ -11,6 +13,7 @@ import java.io.InputStreamReader;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
@@ -21,6 +24,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -1243,6 +1247,142 @@ public class NexusIntegrationServiceImpl implements NexusIntegrationService {
             log.error("Failed to get {} repository name from Nexus", format, e);
             throw new RuntimeException("Failed to get " + format + " repository name: " + e.getMessage());
         }
+    }
+
+    /**
+     * Nexus Search API를 사용하여 지정한 Repository 안의 정확한 Helm Chart를 확인합니다.
+     * 검색 조건은 Nexus가 부분 일치로 처리할 수 있으므로 응답도 Repository/이름/버전 기준으로
+     * 다시 비교하고, 실제 tgz asset이 있는 경우에만 존재하는 것으로 판단합니다.
+     */
+    @Override
+    public boolean checkHelmChartExistsInNexus(String repositoryName, String chartName, String chartVersion) {
+        if (isBlank(repositoryName) || isBlank(chartName) || isBlank(chartVersion)) {
+            log.warn("Cannot check Helm Chart in Nexus because a required value is blank: repository={}, chart={}, version={}",
+                    repositoryName, chartName, chartVersion);
+            return false;
+        }
+
+        try {
+            OssDto nexusInfo = getNexusInfoFromDB();
+            String nexusUrl = removeTrailingSlash(nexusInfo.getOssUrl());
+            String password = Base64Utils.base64Decoding(nexusInfo.getOssPassword());
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+            String auth = nexusInfo.getOssUsername() + ":" + password;
+            String encodedAuth = java.util.Base64.getEncoder()
+                    .encodeToString(auth.getBytes(StandardCharsets.UTF_8));
+            headers.set(HttpHeaders.AUTHORIZATION, "Basic " + encodedAuth);
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+
+            ObjectMapper objectMapper = new ObjectMapper();
+            Set<String> visitedContinuationTokens = new HashSet<>();
+            String continuationToken = null;
+
+            do {
+                UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromHttpUrl(nexusUrl)
+                        .path("/service/rest/v1/search")
+                        .queryParam("repository", "{repository}")
+                        .queryParam("name", "{name}")
+                        .queryParam("version", "{version}");
+                Map<String, String> uriVariables = new HashMap<>();
+                uriVariables.put("repository", repositoryName);
+                uriVariables.put("name", chartName);
+                uriVariables.put("version", chartVersion);
+                if (!isBlank(continuationToken)) {
+                    uriBuilder.queryParam("continuationToken", "{continuationToken}");
+                    uriVariables.put("continuationToken", continuationToken);
+                }
+
+                URI searchUri = uriBuilder.encode().buildAndExpand(uriVariables).toUri();
+                ResponseEntity<String> response = restTemplate.exchange(
+                        searchUri,
+                        HttpMethod.GET,
+                        entity,
+                        String.class);
+
+                if (!response.getStatusCode().is2xxSuccessful() || isBlank(response.getBody())) {
+                    log.warn("Failed to check Helm Chart in Nexus: repository={}, chart={}, version={}, status={}",
+                            repositoryName, chartName, chartVersion, response.getStatusCode());
+                    return false;
+                }
+
+                JsonNode root = objectMapper.readTree(response.getBody());
+                JsonNode items = root.get("items");
+                if (items == null || !items.isArray()) {
+                    log.warn("Unexpected Nexus search response while checking Helm Chart: repository={}, chart={}, version={}",
+                            repositoryName, chartName, chartVersion);
+                    return false;
+                }
+
+                for (JsonNode item : items) {
+                    if (isExactHelmChartComponent(item, repositoryName, chartName, chartVersion)) {
+                        log.info("Helm Chart exists in Nexus: repository={}, chart={}, version={}",
+                                repositoryName, chartName, chartVersion);
+                        return true;
+                    }
+                }
+
+                JsonNode tokenNode = root.get("continuationToken");
+                continuationToken = tokenNode == null || tokenNode.isNull()
+                        ? null
+                        : tokenNode.asText();
+                if (!isBlank(continuationToken) && !visitedContinuationTokens.add(continuationToken)) {
+                    log.warn("Repeated continuation token from Nexus search; stopping Helm Chart check: {}",
+                            continuationToken);
+                    return false;
+                }
+            } while (!isBlank(continuationToken));
+
+            log.info("Helm Chart does not exist in Nexus: repository={}, chart={}, version={}",
+                    repositoryName, chartName, chartVersion);
+            return false;
+        } catch (Exception e) {
+            log.warn("Failed to check Helm Chart in Nexus: repository={}, chart={}, version={}, reason={}",
+                    repositoryName, chartName, chartVersion, e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isExactHelmChartComponent(JsonNode item,
+                                              String repositoryName,
+                                              String chartName,
+                                              String chartVersion) {
+        if (!repositoryName.equals(item.path("repository").asText())
+                || !"helm".equals(item.path("format").asText())
+                || !chartName.equals(item.path("name").asText())
+                || !chartVersion.equals(item.path("version").asText())) {
+            return false;
+        }
+
+        String expectedAssetName = chartName + "-" + chartVersion + ".tgz";
+        JsonNode assets = item.get("assets");
+        if (assets == null || !assets.isArray()) {
+            return false;
+        }
+
+        for (JsonNode asset : assets) {
+            String path = asset.path("path").asText();
+            if (expectedAssetName.equals(path) || path.endsWith("/" + expectedAssetName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String removeTrailingSlash(String value) {
+        if (value == null) {
+            return "";
+        }
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
     
     /**
