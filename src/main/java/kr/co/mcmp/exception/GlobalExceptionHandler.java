@@ -10,10 +10,21 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.stream.Collectors;
 
+import kr.co.mcmp.security.project.ProjectScopeException;
+
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ProjectScopeException.class)
+    public ResponseEntity<ResponseWrapper<String>> handleProjectScopeException(ProjectScopeException e) {
+        ResponseWrapper<String> body = new ResponseWrapper<>(
+                e.getStatus().value(),
+                e.getStatus().getReasonPhrase(),
+                e.getMessage());
+        return ResponseEntity.status(e.getStatus()).body(body);
+    }
     
     /**
      * Exception 발생시

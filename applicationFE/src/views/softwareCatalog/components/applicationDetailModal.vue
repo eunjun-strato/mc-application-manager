@@ -545,6 +545,7 @@ const analysisPeriods = [7, 30, 90]
 
 // computed로 deploymentId 관리
 const currentDeploymentId = ref(0 as number)
+let detailLoadSequence = 0
 
 const catalogIconUrlByName: Record<string, string> = {
   'apache tomcat': '/catalog-icons/apache-tomcat.png',
@@ -578,63 +579,87 @@ const applicationLogoUrl = computed(() => {
 
 // 강제로 API를 다시 호출하는 메서드
 const refreshData = (deploymentId: number) => {
+  const loadSequence = ++detailLoadSequence
   currentDeploymentId.value = deploymentId
+  applicationDetail.value = null
+  operationProfile.value = null
+  operationProfiles.value = []
+  policyRecommendation.value = null
   if (currentDeploymentId.value) {
-    loadApplicationDetail()
-    loadPolicyRecommendation()
+    loadApplicationDetail(deploymentId, loadSequence)
+    loadPolicyRecommendation(deploymentId, loadSequence)
   }
 }
 
+const resetData = () => {
+  detailLoadSequence += 1
+  currentDeploymentId.value = 0
+  applicationDetail.value = null
+  operationProfile.value = null
+  operationProfiles.value = []
+  policyRecommendation.value = null
+  logoLoadFailed.value = false
+  loading.value = false
+  policyLoading.value = false
+  closeModal()
+}
+
 defineExpose({
-  refreshData
+  refreshData,
+  resetData
 })
 
-const loadApplicationDetail = async () => {
-  if (!currentDeploymentId.value) return
+const loadApplicationDetail = async (deploymentId: number, loadSequence: number) => {
+  if (!deploymentId) return
   
   loading.value = true
   try {
     logoLoadFailed.value = false
-    const { data } = await getApplicationDetail(currentDeploymentId.value)
-    if (data) {
+    const { data } = await getApplicationDetail(deploymentId)
+    if (loadSequence === detailLoadSequence && deploymentId === currentDeploymentId.value && data) {
       applicationDetail.value = data.integratedInfo
     }
   } catch (error) {
+    if (loadSequence !== detailLoadSequence) return
     console.error('Failed to load application detail:', error)
     toast.error('Failed to load application detail')
   } finally {
-    loading.value = false
+    if (loadSequence === detailLoadSequence) loading.value = false
   }
 }
 
-const loadPolicyRecommendation = async () => {
-  if (!currentDeploymentId.value) return
+const loadPolicyRecommendation = async (deploymentId: number, loadSequence: number) => {
+  if (!deploymentId) return
 
   policyLoading.value = true
   try {
-    const profileRes = await getOperationProfile(currentDeploymentId.value)
+    const profileRes = await getOperationProfile(deploymentId)
+    if (loadSequence !== detailLoadSequence || deploymentId !== currentDeploymentId.value) return
     operationProfile.value = profileRes.data || null
     const periodResults = await Promise.all(
       analysisPeriods.map(async (period) => {
         try {
-          const res = await getOperationProfile(currentDeploymentId.value, period)
+          const res = await getOperationProfile(deploymentId, period)
           return res.data || null
         } catch {
           return null
         }
       })
     )
+    if (loadSequence !== detailLoadSequence || deploymentId !== currentDeploymentId.value) return
     operationProfiles.value = periodResults.filter(Boolean)
 
-    const recommendationRes = await getPolicyRecommendation(currentDeploymentId.value)
+    const recommendationRes = await getPolicyRecommendation(deploymentId)
+    if (loadSequence !== detailLoadSequence || deploymentId !== currentDeploymentId.value) return
     policyRecommendation.value = recommendationRes.data || null
   } catch (error) {
+    if (loadSequence !== detailLoadSequence) return
     console.error('Failed to load policy recommendation:', error)
     operationProfile.value = null
     operationProfiles.value = []
     policyRecommendation.value = null
   } finally {
-    policyLoading.value = false
+    if (loadSequence === detailLoadSequence) policyLoading.value = false
   }
 }
 
@@ -754,7 +779,7 @@ const runPolicyAnalysis = async () => {
   policyLoading.value = true
   try {
     await analyzePolicyRecommendation(currentDeploymentId.value)
-    await loadPolicyRecommendation()
+    await loadPolicyRecommendation(currentDeploymentId.value, detailLoadSequence)
     toast.success('Policy recommendation analyzed')
   } catch (error) {
     console.error('Failed to analyze policy recommendation:', error)

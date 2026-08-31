@@ -18,6 +18,10 @@
 app:
   scheduling:
     enabled: false
+  # Standalone local UI can run without Web Console/IAM context.
+  # Set PROJECT_SCOPE_ENFORCEMENT_ENABLED=true for local integration tests.
+  project-scope:
+    enabled: ${PROJECT_SCOPE_ENFORCEMENT_ENABLED:false}
 
 spring:
   jpa:

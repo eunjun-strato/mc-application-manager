@@ -40,7 +40,7 @@
 </template>
 <script setup lang="ts">
 import Tabulator from '@/components/Table/Tabulator.vue'
-import { ref, onMounted } from 'vue';
+import { ref, onBeforeUnmount, onMounted, watch } from 'vue';
 import type { ApplicationStatus } from '@/views/type/type'
 import type { ColumnDefinition } from 'tabulator-tables';
 import { useToast } from 'vue-toastification';
@@ -56,6 +56,17 @@ import {
 } from '../applicationStatusDisplay'
 
 const toast = useToast()
+
+interface Props {
+  nsId?: string
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  nsId: ''
+})
+const isEmbedded = window.self !== window.top
+let mounted = false
+let statusLoadSequence = 0
 /**
  * @Title applicationsStatusList / columns
  * @Desc
@@ -81,8 +92,29 @@ const applicationActionConfirmModalRef = ref()
  * @Desc 컬럼 set Callback 함수 호출 / ApplicationStatusList Callback 함수 호출
  */
 onMounted(async () => {
+  mounted = true
   setColumns()
   await _getApplicationsStatusList()
+})
+
+onBeforeUnmount(() => {
+  statusLoadSequence += 1
+})
+
+watch(() => props.nsId, async (newNamespace, previousNamespace) => {
+  if (newNamespace === previousNamespace) return
+
+  statusLoadSequence += 1
+  applicationsStatusList.value = []
+  applicationStatusId.value = 0
+  selectedDeploymentId.value = 0
+  deploymentType.value = ''
+  applicationName.value = ''
+  catalogId.value = 0
+  applicationDetailModalRef.value?.resetData()
+  if (mounted) {
+    await _getApplicationsStatusList()
+  }
 })
 
 /**_getApplicationsStatusList
@@ -90,10 +122,22 @@ onMounted(async () => {
  * @Desc ApplicationStatus List Callback 함수 / ApplicationStatus List api 호출
  */
 const _getApplicationsStatusList = async () => {
+  const loadSequence = ++statusLoadSequence
+  const namespace = String(props.nsId || '').trim()
   try {
     initData()
 
-    const { data } = await getApplicationsStatus()
+    // In Web Console, wait for the selected Project context instead of
+    // briefly requesting an unscoped list while the iframe is initializing.
+    if (isEmbedded && !namespace) {
+      applicationsStatusList.value = []
+      return
+    }
+
+    const { data } = await getApplicationsStatus(namespace || undefined)
+    if (loadSequence !== statusLoadSequence || namespace !== String(props.nsId || '').trim()) {
+      return
+    }
 
     if (data) {
       applicationsStatusList.value = data
@@ -104,7 +148,7 @@ const _getApplicationsStatusList = async () => {
     }
 
   } catch (error) {
-    console.log(error)
+    if (loadSequence !== statusLoadSequence) return
     toast.error('Unable to retrieve data')
   }
 }

@@ -66,6 +66,8 @@ public interface ApplicationService {
      */
     List<ApplicationStatus> getAllApplicationStatus();
 
+    List<ApplicationStatus> getAllApplicationStatus(String namespace);
+
     /**
      * 특정 애플리케이션 상태의 에러 로그를 조회합니다.
      *

@@ -12,37 +12,19 @@
             </div>
             <!-- Catalog management actions -->
             <div class="col-auto ms-auto">
-              <div
-                ref="manageMenuRef"
-                class="dropdown"
-                @keydown.esc.stop="closeManageMenu">
+              <div class="btn-list">
                 <button
                   type="button"
                   class="btn btn-outline-primary"
-                  :aria-expanded="manageMenuOpen"
-                  aria-haspopup="menu"
-                  @click="toggleManageMenu">
-                  Manage
+                  @click="onClickRegister">
+                  Register
                 </button>
-                <div
-                  class="dropdown-menu dropdown-menu-end"
-                  :class="{ show: manageMenuOpen }"
-                  role="menu">
-                  <button
-                    type="button"
-                    class="dropdown-item"
-                    role="menuitem"
-                    @click="onClickDeploy('Application Installation')">
-                    Deploy
-                  </button>
-                  <button
-                    type="button"
-                    class="dropdown-item"
-                    role="menuitem"
-                    @click="onClickRegister">
-                    Register
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  @click="onClickDeploy('Application Installation')">
+                  Deploy
+                </button>
               </div>
             </div>
             <!-- New Button -->
@@ -123,7 +105,7 @@
                     <!-- Status -->
                     <div class="tab-pane" id="tabs-status">
                       <div>
-                        <ApplicationStatusList ref="applicationStatusListRef" />
+                        <ApplicationStatusList ref="applicationStatusListRef" :ns-id="nsId" />
                       </div>
                     </div>
 
@@ -168,7 +150,7 @@ import RepositoryDetail from '@/views/repository/RepositoryDetail.vue';
 import { Modal } from 'bootstrap';
 
 // ETC
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { useUserStore } from '@/stores/user'
 
 const userinfo = useUserStore();
@@ -178,35 +160,6 @@ const showRepositoryDetail = ref(false)
 const selectedRepositoryName = ref("")
 const applicationStatusListRef = ref<InstanceType<typeof ApplicationStatusList> | null>(null)
 const softwareCatalogListRef = ref<InstanceType<typeof SoftwareCatalogList> | null>(null)
-const manageMenuRef = ref<HTMLElement | null>(null)
-const manageMenuOpen = ref(false)
-
-/**
-* @Title Life Cycle
-* @Desc 컬럼 set Callback 함수 호출
-*/
-onMounted(async () => {
-  document.addEventListener('click', closeManageMenuOnOutsideClick)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', closeManageMenuOnOutsideClick)
-})
-
-const toggleManageMenu = () => {
-  manageMenuOpen.value = !manageMenuOpen.value
-}
-
-const closeManageMenu = () => {
-  manageMenuOpen.value = false
-}
-
-const closeManageMenuOnOutsideClick = (event: MouseEvent) => {
-  const target = event.target as Node | null
-  if (target && !manageMenuRef.value?.contains(target)) {
-    closeManageMenu()
-  }
-}
 
 const openModal = (modalId: string) => {
   const modalElement = document.getElementById(modalId)
@@ -220,14 +173,12 @@ const openModal = (modalId: string) => {
 * @Desc If when you Application Install or Uninstall Action
 */
 const onClickDeploy = async (value: string) => {
-  closeManageMenu()
   modalTite.value = value
   await nextTick()
   openModal('install-form')
 }
 
 const onClickRegister = async () => {
-  closeManageMenu()
   softwareCatalogListRef.value?.startRegistration()
   await nextTick()
   openModal('modal-wizard')

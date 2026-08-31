@@ -11,12 +11,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import kr.co.mcmp.response.ResponseWrapper;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentHistoryDTO;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentLogDTO;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOrchestrationService;
+import kr.co.mcmp.security.project.ProjectScopeAuthorizationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -30,13 +32,17 @@ import lombok.extern.slf4j.Slf4j;
 public class DeploymentHistoryController {
 
     private final ApplicationOrchestrationService applicationOrchestrationService;
+    private final ProjectScopeAuthorizationService projectScopeAuthorizationService;
 
     @Operation(summary = "Get deployment history by catalog ID", description = "Retrieve deployment history for a specific catalog.")
     @GetMapping("/catalog/{catalogId}")
     public ResponseEntity<ResponseWrapper<List<DeploymentHistoryDTO>>> getDeploymentHistories(
             @Parameter(description = "Catalog ID to get deployment history for", required = true, example = "123") @PathVariable Long catalogId,
-            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username) {
+            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username,
+            HttpServletRequest httpRequest) {
+        String namespace = projectScopeAuthorizationService.getAuthorizedNamespace(httpRequest);
         List<DeploymentHistoryDTO> result = applicationOrchestrationService.getDeploymentHistories(catalogId, username).stream()
+                .filter(history -> namespace.isBlank() || namespace.equals(history.getNamespace()))
                 .map(DeploymentHistoryDTO::new)
                 .toList();
         return ResponseEntity.ok(new ResponseWrapper<>(result));
@@ -46,7 +52,9 @@ public class DeploymentHistoryController {
     @GetMapping("/{deploymentId}/logs")
     public ResponseEntity<ResponseWrapper<List<DeploymentLogDTO>>> getDeploymentLogs(
             @Parameter(description = "Deployment ID to get logs for", required = true, example = "123") @PathVariable Long deploymentId,
-            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username) {
+            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         List<DeploymentLogDTO> result = applicationOrchestrationService.getDeploymentLogs(deploymentId, username).stream()
                 .map(DeploymentLogDTO::new)
                 .toList();
@@ -58,7 +66,9 @@ public class DeploymentHistoryController {
     public ResponseEntity<ResponseWrapper<Map<String, Object>>> deleteApplicationByDeploymentHistoryId(
             @Parameter(description = "Deployment History ID to delete", required = true, example = "123") @PathVariable Long deploymentHistoryId,
             @Parameter(description = "Reason for deletion", required = true, example = "Application no longer needed") @RequestParam String reason,
-            @Parameter(description = "Username performing the deletion (optional)", example = "admin") @RequestParam(required = false) String username) throws Exception {
+            @Parameter(description = "Username performing the deletion (optional)", example = "admin") @RequestParam(required = false) String username,
+            HttpServletRequest httpRequest) throws Exception {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentHistoryId);
         Map<String, Object> result = applicationOrchestrationService.deleteApplicationByDeploymentHistoryId(deploymentHistoryId, reason, username);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }

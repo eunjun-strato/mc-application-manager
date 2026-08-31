@@ -1,14 +1,29 @@
 <template>
-  <div class="modal fade" id="install-form" tabindex="-1">
-    <div class="modal-dialog modal-lg" role="document">
+  <div
+    :class="embedded ? 'install-embedded' : 'modal fade'"
+    :id="formId"
+    :tabindex="embedded ? undefined : -1">
+    <div
+      class="modal-dialog modal-lg"
+      :class="{ 'install-embedded-dialog': embedded }"
+      role="document">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">
             {{ modalTitle }}
           </h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" @click="setInit"></button>
+          <button
+            v-if="!embedded"
+            type="button"
+            class="btn-close"
+            data-bs-dismiss="modal"
+            aria-label="Close"
+            @click="setInit"></button>
         </div>
-        <div class="modal-body" style="max-height: calc(100vh - 200px);overflow-y: auto;">
+        <div
+          class="modal-body"
+          :class="{ 'install-embedded-body': embedded }"
+          :style="embedded ? undefined : 'max-height: calc(100vh - 200px);overflow-y: auto;'">
 
           <div v-if="hasProjectContext" class="alert alert-info py-2" role="status">
             Deployment targets are scoped to
@@ -17,6 +32,11 @@
 
           <div v-if="projectScopeError" class="alert alert-warning py-2" role="alert">
             {{ projectScopeError }}
+          </div>
+
+          <div v-if="isTargetLocked" class="alert alert-secondary py-2" role="status">
+            The deployment target was fixed by the Workload screen:
+            <strong>{{ lockedTargetLabel }}</strong>.
           </div>
 
           <div class="mb-3">
@@ -34,7 +54,8 @@
             <select 
               class="form-select" 
               id="infra" 
-              v-model="selectInfra">
+              v-model="selectInfra"
+              :disabled="isTargetLocked">
               <option 
                 v-for="infra in infraList" 
                 :value=infra.value 
@@ -105,7 +126,7 @@
               <select 
                 class="form-select" 
                 id="vm-mci"
-                :disabled="selectNsId == ''" 
+                :disabled="selectNsId == '' || isTargetLocked"
                 v-model="selectMci"
                 @change="onChangeMci">
                 <option v-if="mciList.length === 0" value="">No infra available</option>
@@ -128,15 +149,15 @@
               <select 
                 class="form-select" 
                 id="vm-name"
-                :disabled="selectMci == ''" 
+                :disabled="selectMci == '' || isTargetLocked"
                 v-model="selectVm"
                 @change="onSelectVm">
                 <option value="">Select VM</option>
                 <option 
                   v-for="vm in vmList" 
-                  :value="vm.id" 
-                  :key="vm.name">
-                  {{ vm.name }}
+                  :value="getVmValue(vm)"
+                  :key="getVmValue(vm)">
+                  {{ vm.name || vm.id }}
                 </option>
               </select>
 
@@ -147,7 +168,10 @@
                   class="form-check-label" 
                   style="border: 1px solid #000; padding: 5px; border-radius: 5px; cursor: pointer;">
                   {{ vmId }} 
-                  <span @click="removeVm(index)" style="margin-left: 5px; font-weight: bold;">X</span>
+                  <span
+                    v-if="!isTargetLocked"
+                    @click="removeVm(index)"
+                    style="margin-left: 5px; font-weight: bold;">X</span>
                 </label>
               </div>
             </div>
@@ -159,11 +183,11 @@
               <p class="text-muted">Select the deployment type</p>
               <div style="display: flex; gap: 10px;">
                 <div class="form-check">
-                  <input class="form-check-input" type="radio" id="Standalone" v-model="selectDeploymentType" value="Standalone">
+                  <input class="form-check-input" type="radio" id="Standalone" v-model="selectDeploymentType" value="Standalone" :disabled="isTargetLocked">
                   <label class="form-check-label" for="Standalone">Standalone</label>
                 </div>
                 <div class="form-check">
-                  <input class="form-check-input" type="radio" id="Clustering" v-model="selectDeploymentType" value="Clustering">
+                  <input class="form-check-input" type="radio" id="Clustering" v-model="selectDeploymentType" value="Clustering" :disabled="isTargetLocked">
                   <label class="form-check-label" for="Clustering">Clustering</label>
                 </div>
               </div>
@@ -258,7 +282,7 @@
               <select 
                 class="form-select" 
                 id="k8s-cluster"
-                :disabled="selectNsId == ''" 
+                :disabled="selectNsId == '' || isTargetLocked"
                 v-model="selectCluster"
                 @change="onChangeCluster">
                 <option v-if="clusterList.length === 0" value="">No cluster available</option>
@@ -559,8 +583,8 @@
           class="modal-footer d-flex justify-content-between">
           <a 
             class="btn btn-link link-secondary" 
-            data-bs-dismiss="modal" 
-            @click="setInit">
+            :data-bs-dismiss="embedded ? undefined : 'modal'"
+            @click="handleCancel">
             Cancel
           </a>
 
@@ -582,10 +606,10 @@
             </button>
             <button 
               class="btn btn-primary ms-auto" 
-              data-bs-dismiss="modal" 
+              :data-bs-dismiss="embedded ? undefined : 'modal'"
               @click="runInstall" 
               :disabled="deployDisabled">
-              Deploy
+              {{ deploying ? 'Deploying…' : 'Deploy' }}
             </button>
           </div>
         </div>
@@ -599,21 +623,46 @@ import { ref } from 'vue';
 import { useToast } from 'vue-toastification';
 import { onMounted, watch, computed } from 'vue';
 // @ts-ignore
-import _, { slice } from 'lodash';
+import _ from 'lodash';
 import { getNsInfo, getMciInfo, getVmInfo, getClusterInfo } from '@/api/tumblebug'
 import { getK8sStorageClasses, getSoftwareCatalogList, k8sSpecCheck, objectStorageSmokeCheck, runK8SInstall, runAction, runVmInstall, vmSpecCheck } from '@/api/softwareCatalog'
 import { type SoftwareCatalog } from '@/views/type/type'
 import { useUserStore } from '@/stores/user'
 
 interface Props {
-  nsId: string
-  title: string
+  nsId?: string
+  title?: string
+  embedded?: boolean
+  formId?: string
+  targetType?: '' | 'VM' | 'K8S'
+  targetMciId?: string
+  targetVmId?: string
+  targetClusterId?: string
 }
 const toast = useToast()
 const userStore = useUserStore()
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  nsId: '',
+  title: 'Application Installation',
+  embedded: false,
+  formId: 'install-form',
+  targetType: '',
+  targetMciId: '',
+  targetVmId: '',
+  targetClusterId: ''
+})
+const emit = defineEmits<{
+  (event: 'ready', payload: Record<string, unknown>): void
+  (event: 'deployment-event', payload: Record<string, unknown>): void
+  (event: 'cancel'): void
+}>()
 const modalTitle = computed(() => props.title);
+const normalizedTargetType = computed(() => String(props.targetType || '').toUpperCase())
+const isTargetLocked = computed(() => props.embedded && ['VM', 'K8S'].includes(normalizedTargetType.value))
+const lockedTargetLabel = computed(() => normalizedTargetType.value === 'VM'
+  ? `VM ${props.targetVmId} in ${props.targetMciId}`
+  : `Kubernetes cluster ${props.targetClusterId}`)
 
 const normalizeScopeValues = (value: unknown): string[] => {
   const values = Array.isArray(value) ? value : [value]
@@ -686,6 +735,7 @@ const ingressData = ref({} as any)
 const objectStorageData = ref({} as any)
 const objectStorageCheckResult = ref(null as any)
 const objectStorageChecking = ref(false as boolean)
+const deploying = ref(false)
 const selectedResourceType = ref("GENERAL_PURPOSE" as string)
 const storageClassList = ref([] as any[])
 const selectedStorageClass = ref("" as string)
@@ -702,6 +752,8 @@ const projectScopeError = ref('')
 let resourceLoadSequence = 0
 
 const getNamespaceValue = (namespace: any) => namespace?.id || namespace?.name || ''
+const getMciValue = (mci: any) => mci?.id || mci?.name || ''
+const getVmValue = (vm: any) => vm?.id || vm?.name || ''
 const getClusterValue = (cluster: any) => cluster?.name || cluster?.id || ''
 const matchesScope = (resource: any, allowedIds: string[]) => {
   if (allowedIds.length === 0) return true
@@ -775,8 +827,8 @@ watch(projectContextKey, async (newContext, previousContext) => {
   selectedCatalogIdx.value = 0
   setSpecCheckFlag()
 
-  const modalElement = document.getElementById('install-form')
-  if (modalElement?.classList.contains('show')) {
+  const modalElement = document.getElementById(props.formId)
+  if (props.embedded || modalElement?.classList.contains('show')) {
     await setInit()
   }
 })
@@ -797,7 +849,33 @@ watch(selectDeploymentType, () => {
 });
 
 onMounted(async () => {
-  const modalElement: any = document.getElementById('install-form');
+  if (props.embedded) {
+    try {
+      await setInit()
+      if (projectScopeError.value) {
+        emit('deployment-event', {
+          status: 'FORM_ERROR',
+          message: projectScopeError.value
+        })
+        return
+      }
+      await _getSoftwareCatalogList()
+      emit('ready', {
+        targetType: normalizedTargetType.value,
+        namespace: selectNsId.value
+      })
+    } catch (error) {
+      projectScopeError.value = projectScopeError.value || 'The software catalog could not be loaded.'
+      emit('deployment-event', {
+        status: 'FORM_ERROR',
+        message: 'The installation form could not be initialized.'
+      })
+    }
+    return
+  }
+
+  const modalElement: any = document.getElementById(props.formId);
+  if (!modalElement) return
   // Open Modal Action 
   modalElement.addEventListener('show.bs.modal', async() => {
     await setInit()
@@ -807,8 +885,8 @@ onMounted(async () => {
 
 const setInit = async () => {
   const loadSequence = ++resourceLoadSequence
-  selectInfra.value = "VM"
   clearTargetResources()
+  selectInfra.value = isTargetLocked.value ? normalizedTargetType.value : "VM"
   selectDeploymentType.value = "Standalone"
   hpaData.value = {
     hpaEnabled: false,
@@ -870,6 +948,14 @@ const _getSoftwareCatalogList = async () => {
 }
 
 const setInfraList = () => {
+  if (isTargetLocked.value) {
+    infraList.value = [{
+      key: normalizedTargetType.value,
+      value: normalizedTargetType.value
+    }]
+    return
+  }
+
   infraList.value = [
     {
       key: "VM",
@@ -938,9 +1024,24 @@ const _getMciName = async (loadSequence = resourceLoadSequence) => {
     if (loadSequence !== resourceLoadSequence) return
 
     const allMcis = Array.isArray(data) ? data : []
-    mciList.value = allMcis.filter((mci: any) => matchesScope(mci, projectMciIds.value))
+    const scopedMcis = allMcis.filter((mci: any) => matchesScope(mci, projectMciIds.value))
+    if (isTargetLocked.value && normalizedTargetType.value === 'VM') {
+      const targetMci = scopedMcis.find((mci: any) => matchesScope(mci, [props.targetMciId]))
+      if (!targetMci) {
+        mciList.value = []
+        selectMci.value = ''
+        projectScopeError.value = `Infra "${props.targetMciId}" was not found in the selected project namespace.`
+        return
+      }
+      mciList.value = [targetMci]
+      selectMci.value = getMciValue(targetMci)
+      await _getVmName(loadSequence)
+      return
+    }
+
+    mciList.value = scopedMcis
     if (mciList.value.length > 0) {
-      selectMci.value = mciList.value[0].id || mciList.value[0].name
+      selectMci.value = getMciValue(mciList.value[0])
       await _getVmName(loadSequence)
     } else {
       selectMci.value = ''
@@ -963,7 +1064,27 @@ const _getVmName = async (loadSequence = resourceLoadSequence) => {
     const { data } = await getVmInfo(params)
     if (loadSequence !== resourceLoadSequence) return
 
-    originalVmList.value = Array.isArray(data?.node) ? data.node : []
+    const availableVms = Array.isArray(data?.node) ? data.node : []
+    if (isTargetLocked.value && normalizedTargetType.value === 'VM') {
+      const targetVm = availableVms.find((vm: any) => matchesScope(vm, [props.targetVmId]))
+      if (!targetVm) {
+        originalVmList.value = []
+        vmList.value = []
+        selectVm.value = ''
+        selectedVmList.value = []
+        projectScopeError.value = `VM "${props.targetVmId}" was not found in infra "${props.targetMciId}".`
+        return
+      }
+
+      const targetVmId = getVmValue(targetVm)
+      originalVmList.value = [targetVm]
+      vmList.value = [targetVm]
+      selectVm.value = targetVmId
+      selectedVmList.value = [targetVmId]
+      return
+    }
+
+    originalVmList.value = availableVms
     // Set vmList excluding VMs that are already in selectedVmList
     vmList.value = originalVmList.value.filter((vm: any) => 
       !selectedVmList.value.includes(vm.id)
@@ -985,14 +1106,27 @@ const _getClusterName = async (loadSequence = resourceLoadSequence) => {
     if (loadSequence !== resourceLoadSequence) return
 
     const allClusters = Array.isArray(data) ? data : []
-    clusterList.value = allClusters.filter((cluster: any) => matchesScope(cluster, projectClusterIds.value))
-    if (clusterList.value.length > 0) {
-      selectCluster.value = getClusterValue(clusterList.value[0])
+    const scopedClusters = allClusters.filter((cluster: any) => matchesScope(cluster, projectClusterIds.value))
+    if (isTargetLocked.value && normalizedTargetType.value === 'K8S') {
+      const targetCluster = scopedClusters.find((cluster: any) => matchesScope(cluster, [props.targetClusterId]))
+      if (!targetCluster) {
+        clusterList.value = []
+        selectCluster.value = ''
+        projectScopeError.value = `Cluster "${props.targetClusterId}" was not found in the selected project namespace.`
+        return
+      }
+      clusterList.value = [targetCluster]
+      selectCluster.value = getClusterValue(targetCluster)
     } else {
-      selectCluster.value = ''
-      projectScopeError.value = projectClusterIds.value.length > 0
-        ? `Cluster "${projectClusterIds.value.join(', ')}" assigned to this project was not found.`
-        : 'No Kubernetes cluster is available in this project.'
+      clusterList.value = scopedClusters
+      if (clusterList.value.length > 0) {
+        selectCluster.value = getClusterValue(clusterList.value[0])
+      } else {
+        selectCluster.value = ''
+        projectScopeError.value = projectClusterIds.value.length > 0
+          ? `Cluster "${projectClusterIds.value.join(', ')}" assigned to this project was not found.`
+          : 'No Kubernetes cluster is available in this project.'
+      }
     }
     objectStorageData.value = getDefaultObjectStorageData()
     objectStorageCheckResult.value = null
@@ -1090,6 +1224,8 @@ const onSelectVm = () => {
 }
 
 const removeVm = (index: number) => {
+  if (isTargetLocked.value) return
+
   const removedVmId = selectedVmList.value[index];
   selectedVmList.value.splice(index, 1);
   
@@ -1105,87 +1241,129 @@ const removeVm = (index: number) => {
   onChangeForm();
 }
 
-const runInstall = async () => {
-  let appList = [] as Array<String>
-  let res = {} as any
+const handleCancel = async () => {
+  if (deploying.value) return
+  emit('cancel')
+  await setInit()
+}
 
-  if (selectInfra.value === 'VM') {
-    // History: The initial design has changed, currently only sending 1 Application (previously it could receive multiple apps)
-    appList = inputApplications.value.split(",").map(item => item.toLowerCase().trim());
-    
-    let params = {} as any
-    if (modalTitle.value == 'Application Installation') {
-      // Generate clusterName (only required in Clustering mode)
-      const clusterName = selectDeploymentType.value === "Clustering" 
-        ? `${inputApplications.value}-cluster` 
-        : `${inputApplications.value}-standalone`;
+const getDeploymentTarget = () => selectInfra.value === 'VM'
+  ? {
+      targetType: 'VM',
+      namespace: selectNsId.value,
+      mciId: selectMci.value,
+      vmId: selectedVmList.value[0] || ''
+    }
+  : {
+      targetType: 'K8S',
+      namespace: selectNsId.value,
+      clusterId: selectCluster.value
+    }
+
+const emitDeploymentEvent = (status: string, detail: Record<string, unknown> = {}) => {
+  emit('deployment-event', {
+    status,
+    target: getDeploymentTarget(),
+    ...detail
+  })
+}
+
+const getDeploymentId = (responseData: any) => {
+  if (!responseData || typeof responseData !== 'object') return undefined
+  return responseData.deploymentId || responseData.applicationId || responseData.id || undefined
+}
+
+const runInstall = async () => {
+  if (projectScopeError.value) {
+    toast.error(projectScopeError.value)
+    return
+  }
+  if (selectInfra.value !== 'VM' && selectInfra.value !== 'K8S') {
+    toast.error('Please Select Infra')
+    return
+  }
+  if (selectInfra.value === 'K8S' && !validateStorageClassSelection()) return
+
+  deploying.value = true
+  emitDeploymentEvent('DEPLOY_STARTED')
+
+  try {
+    let res = {} as any
+
+    if (selectInfra.value === 'VM') {
+      let params = {} as any
+      if (modalTitle.value == 'Application Installation') {
+        // Generate clusterName (only required in Clustering mode)
+        const clusterName = selectDeploymentType.value === "Clustering"
+          ? `${inputApplications.value}-cluster`
+          : `${inputApplications.value}-standalone`;
+        const servicePort = inputServicePort.value === "" ? undefined : Number(inputServicePort.value);
+
+        params = {
+          namespace: selectNsId.value,
+          mciId: selectMci.value,
+          vmIds: selectedVmList.value,
+          clusterName: clusterName,
+          catalogId: selectedCatalogIdx.value,
+          servicePort,
+          username: "admin",
+          deploymentType: selectInfra.value,
+          vmDeploymentMode: selectDeploymentType.value.toUpperCase(),
+          resourceType: selectedResourceType.value,
+        }
+        res = await runVmInstall(params)
+      } else {
+        res = await runAction(params)
+      }
+    } else {
       const servicePort = inputServicePort.value === "" ? undefined : Number(inputServicePort.value);
-      
-      params = {
+      const additionalConfig = buildK8sAdditionalConfig()
+      const params = {
         namespace: selectNsId.value,
-        mciId: selectMci.value,
-        vmIds: selectedVmList.value,
-        clusterName: clusterName,
+        clusterName: selectCluster.value,
         catalogId: selectedCatalogIdx.value,
         servicePort,
-        username: "admin",
+        username: "",
         deploymentType: selectInfra.value,
-        vmDeploymentMode: selectDeploymentType.value.toUpperCase(),
+        hpaEnabled: hpaData.value.hpaEnabled,
+        minReplicas: hpaData.value.hpaMinReplicas,
+        maxReplicas: hpaData.value.hpaMaxReplicas,
+        cpuThreshold: hpaData.value.hpaCpuUtilization,
+        memoryThreshold: hpaData.value.hpaMemoryUtilization,
+        workloadRebalancingEnabled: workloadRebalancingEnabled.value,
         resourceType: selectedResourceType.value,
+        ingressEnabled: ingressData.value.ingressEnabled,
+        ingressHost: normalizeIngressHost(ingressData.value.ingressHost),
+        ingressPath: ingressData.value.ingressPath,
+        ingressClass: ingressData.value.ingressClass,
+        ingressTlsEnabled: ingressData.value.ingressTlsEnabled,
+        ingressTlsSecret: ingressData.value.ingressTlsSecret,
+        additionalConfig
       }
-      res = await runVmInstall(params)
-    } else {
-      res = await runAction(params)
+
+      res = modalTitle.value == 'Application Installation'
+        ? await runK8SInstall(params)
+        : await runAction(params)
     }
 
-    if(res.data) {
+    if (res.data) {
       toast.success('SUCCESS')
+      emitDeploymentEvent('DEPLOY_SUCCEEDED', {
+        deploymentId: getDeploymentId(res.data)
+      })
     } else {
       toast.error('FAIL')
+      emitDeploymentEvent('DEPLOY_FAILED', {
+        message: 'The deployment API did not return a success result.'
+      })
     }
-  }
-
-  else if (selectInfra.value === 'K8S') {
-    if (!validateStorageClassSelection()) return
-
-    // History: The initial design has changed, currently only sending 1 Application (previously it could receive multiple apps)
-    appList = inputApplications.value.split(",").map(item => item.toLowerCase().trim());
-    const servicePort = inputServicePort.value === "" ? undefined : Number(inputServicePort.value);
-    const additionalConfig = buildK8sAdditionalConfig()
-    let params = {
-      namespace: selectNsId.value,
-      clusterName: selectCluster.value,
-      catalogId: selectedCatalogIdx.value,
-      servicePort,
-      username: "",
-      deploymentType: selectInfra.value,
-      hpaEnabled: hpaData.value.hpaEnabled,
-      minReplicas: hpaData.value.hpaMinReplicas,
-      maxReplicas: hpaData.value.hpaMaxReplicas,
-      cpuThreshold: hpaData.value.hpaCpuUtilization,
-      memoryThreshold: hpaData.value.hpaMemoryUtilization,
-      workloadRebalancingEnabled: workloadRebalancingEnabled.value,
-      resourceType: selectedResourceType.value,
-      ingressEnabled: ingressData.value.ingressEnabled,
-      ingressHost: normalizeIngressHost(ingressData.value.ingressHost),
-      ingressPath: ingressData.value.ingressPath,
-      ingressClass: ingressData.value.ingressClass,
-      ingressTlsEnabled: ingressData.value.ingressTlsEnabled,
-      ingressTlsSecret: ingressData.value.ingressTlsSecret,
-      additionalConfig
-    }
-
-    if(modalTitle.value == 'Application Installation') {
-      res = await runK8SInstall(params)
-    } else {
-      res = await runAction(params)
-    }
-
-    if(res.data) {
-      toast.success('SUCCESS')
-    } else {
-      toast.error('FAIL')
-    }
+  } catch (error) {
+    toast.error('FAIL')
+    emitDeploymentEvent('DEPLOY_FAILED', {
+      message: 'The deployment request failed.'
+    })
+  } finally {
+    deploying.value = false
   }
 }
 
@@ -1353,7 +1531,8 @@ const objectStorageCheckPassed = computed(() => {
 })
 
 const deployDisabled = computed(() => {
-  return Boolean(projectScopeError.value)
+  return deploying.value
+    || Boolean(projectScopeError.value)
     || specCheckFlag.value
     || !objectStorageCheckPassed.value
     || (storageClassRequired.value && !_.isEmpty(storageClassErrorMessage.value))
@@ -1515,6 +1694,17 @@ const onChangeCluster = async () => {
 
 </script>
 <style scoped>
+.install-embedded {
+  width: 100%;
+}
+.install-embedded-dialog {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+}
+.install-embedded-body {
+  overflow-y: visible;
+}
 .w-80-per {
   width: 80% !important;
 }

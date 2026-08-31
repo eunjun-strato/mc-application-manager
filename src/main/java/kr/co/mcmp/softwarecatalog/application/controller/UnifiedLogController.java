@@ -14,12 +14,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import kr.co.mcmp.response.ResponseWrapper;
 import kr.co.mcmp.softwarecatalog.application.dto.UnifiedLogDTO;
 import kr.co.mcmp.softwarecatalog.application.service.UnifiedLogService;
+import kr.co.mcmp.security.project.ProjectScopeAuthorizationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -34,6 +36,7 @@ import lombok.extern.slf4j.Slf4j;
 public class UnifiedLogController {
     
     private final UnifiedLogService unifiedLogService;
+    private final ProjectScopeAuthorizationService projectScopeAuthorizationService;
     
     /**
      * Get logs by deployment ID
@@ -41,7 +44,9 @@ public class UnifiedLogController {
     @GetMapping("/deployment/{deploymentId}")
     @Operation(summary = "Get logs by deployment ID", description = "Retrieve all logs for a specific deployment.")
     public ResponseEntity<ResponseWrapper<List<UnifiedLogDTO>>> getLogsByDeploymentId(
-            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             List<UnifiedLogDTO> logs = unifiedLogService.getLogsByDeploymentId(deploymentId);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -58,7 +63,9 @@ public class UnifiedLogController {
     @Operation(summary = "Get logs by deployment ID and module", description = "Retrieve logs for a specific module of a specific deployment.")
     public ResponseEntity<ResponseWrapper<List<UnifiedLogDTO>>> getLogsByDeploymentIdAndModule(
             @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
-            @Parameter(description = "Module (KUBERNETES, DOCKER, APPLICATION, SYSTEM)") @PathVariable String module) {
+            @Parameter(description = "Module (KUBERNETES, DOCKER, APPLICATION, SYSTEM)") @PathVariable String module,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             List<UnifiedLogDTO> logs = unifiedLogService.getLogsByDeploymentIdAndModule(deploymentId, module);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -75,7 +82,9 @@ public class UnifiedLogController {
     @Operation(summary = "Get logs by deployment ID and severity", description = "Retrieve logs for a specific severity level of a specific deployment.")
     public ResponseEntity<ResponseWrapper<List<UnifiedLogDTO>>> getLogsByDeploymentIdAndSeverity(
             @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
-            @Parameter(description = "Severity (ERROR, WARN, INFO, DEBUG)") @PathVariable String severity) {
+            @Parameter(description = "Severity (ERROR, WARN, INFO, DEBUG)") @PathVariable String severity,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             List<UnifiedLogDTO> logs = unifiedLogService.getLogsByDeploymentIdAndSeverity(deploymentId, severity);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -144,7 +153,9 @@ public class UnifiedLogController {
     @Operation(summary = "Get logs with pagination", description = "Retrieve logs for a specific deployment with pagination.")
     public ResponseEntity<ResponseWrapper<Page<UnifiedLogDTO>>> getLogsWithPagination(
             @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
-            Pageable pageable) {
+            Pageable pageable,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             Page<UnifiedLogDTO> logs = unifiedLogService.getLogsByDeploymentIdWithPagination(deploymentId, pageable);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -160,7 +171,9 @@ public class UnifiedLogController {
     @GetMapping("/deployment/{deploymentId}/statistics/module")
     @Operation(summary = "Get log statistics by module", description = "Retrieve log statistics by module for a specific deployment.")
     public ResponseEntity<ResponseWrapper<List<Object[]>>> getLogStatisticsByModule(
-            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             List<Object[]> statistics = unifiedLogService.getLogStatisticsByModule(deploymentId);
             return ResponseEntity.ok(ResponseWrapper.success(statistics));
@@ -176,7 +189,9 @@ public class UnifiedLogController {
     @GetMapping("/deployment/{deploymentId}/statistics/severity")
     @Operation(summary = "Get log statistics by severity", description = "Retrieve log statistics by severity level for a specific deployment.")
     public ResponseEntity<ResponseWrapper<List<Object[]>>> getLogStatisticsBySeverity(
-            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             List<Object[]> statistics = unifiedLogService.getLogStatisticsBySeverity(deploymentId);
             return ResponseEntity.ok(ResponseWrapper.success(statistics));
@@ -193,7 +208,9 @@ public class UnifiedLogController {
     @DeleteMapping("/deployment/{deploymentId}")
     @Operation(summary = "Delete deployment logs", description = "Delete all logs for a specific deployment.")
     public ResponseEntity<ResponseWrapper<String>> deleteLogsByDeploymentId(
-            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             unifiedLogService.deleteLogsByDeploymentId(deploymentId);
             return ResponseEntity.ok(ResponseWrapper.success("Logs deleted successfully"));
@@ -209,7 +226,9 @@ public class UnifiedLogController {
     @GetMapping("/application-status/{applicationStatusId}")
     @Operation(summary = "Get logs by application status ID", description = "Retrieve all logs for a specific application status.")
     public ResponseEntity<ResponseWrapper<List<UnifiedLogDTO>>> getLogsByApplicationStatusId(
-            @Parameter(description = "Application status ID") @PathVariable Long applicationStatusId) {
+            @Parameter(description = "Application status ID") @PathVariable Long applicationStatusId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeApplicationStatus(httpRequest, applicationStatusId);
         try {
             List<UnifiedLogDTO> logs = unifiedLogService.getLogsByApplicationStatusId(applicationStatusId);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -226,7 +245,9 @@ public class UnifiedLogController {
     @Operation(summary = "Get logs by application status ID and module", description = "Retrieve logs for a specific module of a specific application status.")
     public ResponseEntity<ResponseWrapper<List<UnifiedLogDTO>>> getLogsByApplicationStatusIdAndModule(
             @Parameter(description = "Application status ID") @PathVariable Long applicationStatusId,
-            @Parameter(description = "Module (KUBERNETES, DOCKER, APPLICATION, SYSTEM)") @PathVariable String module) {
+            @Parameter(description = "Module (KUBERNETES, DOCKER, APPLICATION, SYSTEM)") @PathVariable String module,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeApplicationStatus(httpRequest, applicationStatusId);
         try {
             List<UnifiedLogDTO> logs = unifiedLogService.getLogsByApplicationStatusIdAndModule(applicationStatusId, module);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -243,7 +264,9 @@ public class UnifiedLogController {
     @Operation(summary = "Get logs by application status ID and severity", description = "Retrieve logs for a specific severity level of a specific application status.")
     public ResponseEntity<ResponseWrapper<List<UnifiedLogDTO>>> getLogsByApplicationStatusIdAndSeverity(
             @Parameter(description = "Application status ID") @PathVariable Long applicationStatusId,
-            @Parameter(description = "Severity (ERROR, WARN, INFO, DEBUG)") @PathVariable String severity) {
+            @Parameter(description = "Severity (ERROR, WARN, INFO, DEBUG)") @PathVariable String severity,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeApplicationStatus(httpRequest, applicationStatusId);
         try {
             List<UnifiedLogDTO> logs = unifiedLogService.getLogsByApplicationStatusIdAndSeverity(applicationStatusId, severity);
             return ResponseEntity.ok(ResponseWrapper.success(logs));
@@ -259,7 +282,9 @@ public class UnifiedLogController {
     @DeleteMapping("/application-status/{applicationStatusId}")
     @Operation(summary = "Delete application status logs", description = "Delete all logs for a specific application status.")
     public ResponseEntity<ResponseWrapper<String>> deleteLogsByApplicationStatusId(
-            @Parameter(description = "Application status ID") @PathVariable Long applicationStatusId) {
+            @Parameter(description = "Application status ID") @PathVariable Long applicationStatusId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeApplicationStatus(httpRequest, applicationStatusId);
         try {
             unifiedLogService.deleteLogsByApplicationStatusId(applicationStatusId);
             return ResponseEntity.ok(ResponseWrapper.success("Application status logs deleted successfully"));

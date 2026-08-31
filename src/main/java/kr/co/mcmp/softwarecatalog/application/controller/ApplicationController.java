@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -32,6 +33,7 @@ import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequestDTO;
 import kr.co.mcmp.softwarecatalog.application.constants.DeploymentType;
 import kr.co.mcmp.softwarecatalog.kubernetes.service.KubernetesStorageClassService;
+import kr.co.mcmp.security.project.ProjectScopeAuthorizationService;
 import org.springframework.web.bind.annotation.PathVariable;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,11 +49,15 @@ public class ApplicationController {
     private final ApplicationOrchestrationService applicationOrchestrationService;
     private final ObjectStorageSmokeTestService objectStorageSmokeTestService;
     private final KubernetesStorageClassService kubernetesStorageClassService;
+    private final ProjectScopeAuthorizationService projectScopeAuthorizationService;
 
     @Operation(summary = "Deploy application to VM", description = "Deploy an application to a specific VM.")
     @PostMapping("/vm/deploy")
     public ResponseEntity<ResponseWrapper<DeploymentHistoryDTO>> deployVmApplication(
-            @Parameter(description = "Deployment request for VM", required = true) @RequestBody DeploymentRequestDTO requestDTO) {
+            @Parameter(description = "Deployment request for VM", required = true) @RequestBody DeploymentRequestDTO requestDTO,
+            HttpServletRequest httpRequest) {
+
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, requestDTO.getNamespace());
 
         // VM 배포 타입 설정
         requestDTO.setDeploymentType(DeploymentType.VM);
@@ -64,7 +70,10 @@ public class ApplicationController {
     @Operation(summary = "Deploy application to K8s cluster", description = "Deploy an application to a specific K8s cluster.")
     @PostMapping("/k8s/deploy")
     public ResponseEntity<ResponseWrapper<DeploymentHistoryDTO>> deployK8sApplication(
-            @Parameter(description = "Deployment request for K8s", required = true) @RequestBody DeploymentRequestDTO requestDTO) {
+            @Parameter(description = "Deployment request for K8s", required = true) @RequestBody DeploymentRequestDTO requestDTO,
+            HttpServletRequest httpRequest) {
+
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, requestDTO.getNamespace());
 
         // K8s 배포 타입 설정
         requestDTO.setDeploymentType(DeploymentType.K8S);
@@ -80,7 +89,9 @@ public class ApplicationController {
             @Parameter(description = "Namespace for resource check", required = true, example = "default") @RequestParam String namespace,
             @Parameter(description = "MCIS (Multi-Cloud Infrastructure Service) ID", required = true, example = "mci-001") @RequestParam String mciId,
             @Parameter(description = "Virtual Machine ID", required = true, example = "vm-001") @RequestParam String vmId,
-            @Parameter(description = "Catalog ID of the application to check", required = true, example = "123") @RequestParam Long catalogId) {
+            @Parameter(description = "Catalog ID of the application to check", required = true, example = "123") @RequestParam Long catalogId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, namespace);
         boolean result = applicationOrchestrationService.checkSpecForVm(namespace, mciId, vmId, catalogId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
@@ -88,9 +99,11 @@ public class ApplicationController {
     @Operation(summary = "Check K8s cluster resources", description = "Check if there are sufficient resources to deploy an application to the K8s cluster.")
     @GetMapping("/k8s/check")
     public ResponseEntity<ResponseWrapper<Boolean>> checkK8sSpec(
-            @Parameter(description = "Kubernetes namespace for resource check", required = true, example = "default") @RequestParam String namespace,
+            @Parameter(description = "CB-Tumblebug namespace for resource check", required = true, example = "default") @RequestParam String namespace,
             @Parameter(description = "Kubernetes cluster name", required = true, example = "cluster-001") @RequestParam String clusterName,
-            @Parameter(description = "Catalog ID of the application to check", required = true, example = "123") @RequestParam Long catalogId) {
+            @Parameter(description = "Catalog ID of the application to check", required = true, example = "123") @RequestParam Long catalogId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, namespace);
         boolean result = applicationOrchestrationService.checkSpecForK8s(namespace, clusterName, catalogId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
@@ -99,7 +112,9 @@ public class ApplicationController {
     @PostMapping("/k8s/object-storage/smoke-check")
     public ResponseEntity<ResponseWrapper<ObjectStorageSmokeTestResponse>> checkObjectStorage(
             @Parameter(description = "Object Storage smoke check request", required = true)
-            @RequestBody ObjectStorageSmokeTestRequest request) {
+            @RequestBody ObjectStorageSmokeTestRequest request,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, request.getNamespace());
         ObjectStorageSmokeTestResponse result = objectStorageSmokeTestService.runSmokeTest(request);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
@@ -108,7 +123,9 @@ public class ApplicationController {
     @GetMapping("/k8s/storage-classes")
     public ResponseEntity<ResponseWrapper<List<K8sStorageClassDTO>>> getK8sStorageClasses(
             @Parameter(description = "Namespace used to locate the K8s cluster", required = true) @RequestParam String namespace,
-            @Parameter(description = "Kubernetes cluster name", required = true) @RequestParam String clusterName) {
+            @Parameter(description = "Kubernetes cluster name", required = true) @RequestParam String clusterName,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, namespace);
         List<K8sStorageClassDTO> result = kubernetesStorageClassService.getStorageClasses(namespace, clusterName);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
@@ -117,8 +134,11 @@ public class ApplicationController {
     @GetMapping("/history")
     public ResponseEntity<ResponseWrapper<List<DeploymentHistoryDTO>>> getDeploymentHistories(
             @Parameter(description = "Catalog ID to get deployment history for", required = true, example = "123") @RequestParam Long catalogId, 
-            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username) {
+            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username,
+            HttpServletRequest httpRequest) {
+        String namespace = projectScopeAuthorizationService.getAuthorizedNamespace(httpRequest);
         List<DeploymentHistoryDTO> histories = applicationOrchestrationService.getDeploymentHistories(catalogId, username).stream()
+                .filter(history -> namespace.isBlank() || namespace.equals(history.getNamespace()))
                 .map(DeploymentHistoryDTO::new)
                 .toList();
         return ResponseEntity.ok(new ResponseWrapper<>(histories));
@@ -128,7 +148,9 @@ public class ApplicationController {
     @GetMapping("/logs")
     public ResponseEntity<ResponseWrapper<List<DeploymentLogDTO>>> getDeploymentLogs(
             @Parameter(description = "Deployment ID to get logs for", required = true, example = "456") @RequestParam Long deploymentId, 
-            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username) {
+            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         List<DeploymentLogDTO> logs = applicationOrchestrationService.getDeploymentLogs(deploymentId, username).stream()
                 .map(DeploymentLogDTO::new)
                 .toList();
@@ -138,22 +160,35 @@ public class ApplicationController {
     @Operation(summary = "Get application status", description = "Retrieve application status for a specific catalog ID.")
     @GetMapping("/status")
     public ResponseEntity<ResponseWrapper<ApplicationStatusDto>> getLatestApplicationStatus(
-            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username) {
-        ApplicationStatusDto status = applicationOrchestrationService.getLatestApplicationStatus(username);
+            @Parameter(description = "Username filter (optional)", example = "admin") @RequestParam(required = false) String username,
+            HttpServletRequest httpRequest) {
+        String namespace = projectScopeAuthorizationService.getAuthorizedNamespace(httpRequest);
+        ApplicationStatusDto status = namespace.isBlank()
+                ? applicationOrchestrationService.getLatestApplicationStatus(username)
+                : applicationOrchestrationService.getLatestApplicationStatus(username, namespace);
         return ResponseEntity.ok(new ResponseWrapper<>(status));
     }
     
     @Operation(summary = "Get application groups", description = "Retrieve application groups.")
     @GetMapping("/groups")
-    public ResponseEntity<ResponseWrapper<List<ApplicationStatusDto>>> getApplicationGroups() {
-        List<ApplicationStatusDto> list = applicationOrchestrationService.getApplicationGroups();
+    public ResponseEntity<ResponseWrapper<List<ApplicationStatusDto>>> getApplicationGroups(
+            @RequestParam(required = false) String namespace,
+            HttpServletRequest httpRequest) {
+        String scopedNamespace = namespace == null || namespace.isBlank()
+                ? projectScopeAuthorizationService.getAuthorizedNamespace(httpRequest)
+                : projectScopeAuthorizationService.authorizeNamespace(httpRequest, namespace);
+        List<ApplicationStatusDto> list = scopedNamespace.isBlank()
+                ? applicationOrchestrationService.getApplicationGroups()
+                : applicationOrchestrationService.getApplicationGroups(scopedNamespace);
         return ResponseEntity.ok(new ResponseWrapper<>(list));
     }
 
     @Operation(summary = "Perform application operation", description = "Perform application operations on VM or K8s.")
     @PostMapping("/action")
     public ResponseEntity<ResponseWrapper<Map<String, Object>>> performApplicationOperation(
-            @Parameter(description = "Application operation request", required = true) @RequestBody @Valid ApplicationOperationRequest request) throws Exception {
+            @Parameter(description = "Application operation request", required = true) @RequestBody @Valid ApplicationOperationRequest request,
+            HttpServletRequest httpRequest) throws Exception {
+        projectScopeAuthorizationService.authorizeApplicationStatus(httpRequest, request.getApplicationStatusId());
         Map<String, Object> result = applicationOrchestrationService.performOperation(
             request.getOperation(), 
             request.getApplicationStatusId(), 
@@ -185,7 +220,9 @@ public class ApplicationController {
     @Operation(summary = "Get integrated application information by deployment ID", description = "Retrieve integrated information including status, deployment, and logs for a specific deployment.")
     @GetMapping("/integrated/deployment/{deploymentId}")
     public ResponseEntity<ResponseWrapper<IntegratedApplicationInfoDTO>> getIntegratedApplicationInfo(
-            @Parameter(description = "Deployment ID to get integrated information for", required = true, example = "1") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID to get integrated information for", required = true, example = "1") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         try {
             IntegratedApplicationInfoDTO result = applicationService.getIntegratedApplicationInfoByDeploymentIdAsDTO(deploymentId);
             return ResponseEntity.ok(new ResponseWrapper<>(result));

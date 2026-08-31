@@ -1,5 +1,4 @@
-import request from "../common/request";
-import type { SoftwareCatalog } from "@/views/type/type";
+import request, { getProjectContextHeaders } from "../common/request";
 import axios from "axios";
 import { getApiBaseUrl } from "@/common/url";
 
@@ -36,11 +35,14 @@ export const searchArtifacthubhub = (keyword: string) => {
 export const runVmInstall = (params: {
   namespace: string,
   mciId: string,
-  vmId: string,
+  vmIds: string[],
+  clusterName: string,
   catalogId: number,
-  servicePort: number,
+  servicePort?: number,
   username: string,
   deploymentType: string,
+  vmDeploymentMode: string,
+  resourceType: string,
 }) => {
   return request.post(`/applications/vm/deploy`, params)
 }
@@ -124,8 +126,10 @@ export function deleteSoftwareCatalog(catalogId: number) {
   return request.delete(`/catalog/software/${catalogId}`)
 }
 
-export function getApplicationsStatus() {
-  return request.get(`/api/applications/status/groups`)
+export function getApplicationsStatus(namespace?: string) {
+  return request.get(`/api/applications/status/groups`, {
+    params: namespace ? { namespace } : undefined
+  })
 }
 
 export function getCatalogDeploymentStatus(catalogId: number) {
@@ -200,7 +204,11 @@ export function analyzeOperationProfile(deploymentId: number, days = 14) {
 
 export async function analyzePolicyRecommendation(deploymentId: number) {
   try {
-    const response = await axios.post(`${apiBaseUrl}/api/applications/${deploymentId}/policy-recommendation/analyze`)
+    const response = await axios.post(
+      `${apiBaseUrl}/api/applications/${deploymentId}/policy-recommendation/analyze`,
+      undefined,
+      { headers: getProjectContextHeaders() }
+    )
     const responseData = response.data
 
     if (responseData?.code === 200) {
