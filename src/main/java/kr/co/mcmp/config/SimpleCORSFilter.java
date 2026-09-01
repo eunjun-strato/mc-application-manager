@@ -31,7 +31,10 @@ public class SimpleCORSFilter implements Filter {
         response.setHeader("Access-Control-Allow-Credentials", "true");
         response.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS, DELETE, PUT, PATCH");
         response.setHeader("Access-Control-Max-Age", "3600");
-        response.setHeader("Access-Control-Allow-Headers", "x-requested-with, authorization, Content-Type, Authorization, credential, X-XSRF-TOKEN, token, user_id");
+        response.setHeader(
+                "Access-Control-Allow-Headers",
+                "x-requested-with, authorization, Content-Type, credential, X-XSRF-TOKEN, token, user_id, "
+                        + "X-MCMP-Workspace-ID, X-MCMP-Project-ID, X-MCMP-Namespace-ID");
 
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
             response.setStatus(HttpServletResponse.SC_OK);

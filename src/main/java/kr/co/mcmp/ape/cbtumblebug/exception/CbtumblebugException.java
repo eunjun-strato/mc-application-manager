@@ -12,12 +12,13 @@ public class CbtumblebugException extends RuntimeException{
     private String detail;
 
     public CbtumblebugException(String message){
+        super(message);
         this.message = message;
     }
 
     public CbtumblebugException(int code, String message){
+        this(message);
         this.code = code;
-        this.message = message;
     }
 
     public CbtumblebugException(int code, String message, String detail){

@@ -5,7 +5,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
+import java.util.Set;
 
 import kr.co.mcmp.softwarecatalog.application.model.HelmChart;
 import org.apache.commons.lang3.StringUtils;
@@ -15,7 +17,6 @@ import org.yaml.snakeyaml.Yaml;
 import com.marcnuri.helm.Release;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext;
 import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
 import kr.co.mcmp.ape.cbtumblebug.dto.K8sClusterDto;
 import kr.co.mcmp.softwarecatalog.CatalogRepository;
@@ -43,12 +44,20 @@ public class HelmChartService {
     private static final String INGRESS_NGINX_CHART = "ingress-nginx/ingress-nginx";
     private static final String INGRESS_NGINX_CHART_VERSION = "4.14.0";
     private static final String HELM_WAIT_TIMEOUT = "10m";
+    private static final Set<String> LEGACY_CONTAINER_IMAGE_OVERRIDE_KEYS = Set.of(
+            "global.security.allowInsecureImages",
+            "global.imageRegistry",
+            "image.registry",
+            "image.repository",
+            "image.tag",
+            "image.pullPolicy");
 
     private final CbtumblebugRestApi cbtumblebugRestApi;
     private final KubeconfigResolver kubeconfigResolver;
     private final ReleaseNameGenerator releaseNameGenerator;
     private final CatalogRepository catalogRepository;
     private final KubernetesStorageClassService kubernetesStorageClassService;
+    private final KubernetesMetricsApiService kubernetesMetricsApiService;
 
     public Release deployHelmChart(KubernetesClient client, String namespace, SoftwareCatalog catalog, String clusterName) {
         return deployHelmChart(client, namespace, catalog, catalog.getHelmChart(), clusterName);
@@ -116,9 +125,6 @@ public class HelmChartService {
             log.info("8. 새 릴리스 설치 실행 중...");
             String chartRef = repositoryName + "/" + helmChart.getChartName();
             
-            // 이미지 설정 - Chart별로 다르게 처리
-            String imageRepository = buildImageRepository(catalog, helmChart);
-            
             // Values 맵 구성
             java.util.Map<String, String> values = new java.util.HashMap<>();
             values.put("replicaCount", String.valueOf(catalog.getMinReplicas()));
@@ -131,22 +137,7 @@ public class HelmChartService {
             values.put("persistence.enabled", "false");
             values.put("securityContext.runAsNonRoot", "false");
             values.put("containerSecurityContext.allowPrivilegeEscalation", "false");
-            values.put("global.security.allowInsecureImages", "true");
-            boolean lokiChart = helmChart.getChartName().equalsIgnoreCase("loki");
-            if (!lokiChart) {
-                values.put("global.imageRegistry", "docker.io");
-            }
-
-            if (helmChart.getChartName().equalsIgnoreCase("grafana")) {
-                values.put("image.repository", "grafana/grafana");
-                values.put("image.tag", "latest");
-                values.put("image.pullPolicy", "IfNotPresent");
-            } else if (!lokiChart) {
-                values.put("image.repository", imageRepository);
-                values.put("image.tag", "latest");
-                values.put("image.pullPolicy", "IfNotPresent");
-                values.put("image.registry", "docker.io");
-            }
+            // 컨테이너 이미지는 강제하지 않고 Chart values.yaml 기본값을 사용합니다.
 
             // Ingress 설정 적용
             if (catalog.getIngressEnabled() != null && catalog.getIngressEnabled()) {
@@ -287,8 +278,7 @@ public class HelmChartService {
             String providerName = clusterDto.getConnectionConfig().getProviderName();
             String kubeconfigYaml = kubeconfigResolver.getKubeconfigYaml(namespace, clusterName);
             
-            tempKubeconfigPath = Files.createTempFile("kubeconfig-", ".yaml");
-            Files.write(tempKubeconfigPath, kubeconfigYaml.getBytes());
+            tempKubeconfigPath = createTempKubeconfigFile(kubeconfigYaml);
 
             // 3. Helm repository 추가
             addHelmRepository(helmChart);
@@ -306,9 +296,6 @@ public class HelmChartService {
             // 7. Helm Chart 설치 - CLI 방식으로 변경
             String chartRef = helmChart.getRepositoryName() + "/" + helmChart.getChartName();
             
-            // 이미지 설정 - Chart별로 다르게 처리
-            String imageRepository = buildImageRepository(catalog, helmChart);
-            
             // Values 맵 구성
             java.util.Map<String, String> values = new java.util.HashMap<>();
             java.util.Map<String, Object> objectStorageValues = new java.util.HashMap<>();
@@ -322,22 +309,7 @@ public class HelmChartService {
             values.put("persistence.enabled", "false");
             values.put("securityContext.runAsNonRoot", "false");
             values.put("containerSecurityContext.allowPrivilegeEscalation", "false");
-            values.put("global.security.allowInsecureImages", "true");
-            boolean lokiChart = helmChart.getChartName().equalsIgnoreCase("loki");
-            if (!lokiChart) {
-                values.put("global.imageRegistry", "docker.io");
-            }
-
-            if (helmChart.getChartName().equalsIgnoreCase("grafana")) {
-                values.put("image.repository", "grafana/grafana");
-                values.put("image.tag", "latest");
-                values.put("image.pullPolicy", "IfNotPresent");
-            } else if (!lokiChart) {
-                values.put("image.repository", imageRepository);
-                values.put("image.tag", "latest");
-                values.put("image.pullPolicy", "IfNotPresent");
-                values.put("image.registry", "docker.io");
-            }
+            // 컨테이너 이미지는 강제하지 않고 Chart values.yaml 기본값을 사용합니다.
             // HPA 설정 적용
             if (config.isHpaEnabled()) {
                 log.info("HPA 설정 적용 중...");
@@ -520,38 +492,20 @@ public class HelmChartService {
         }
     }
 
-    private String buildImageRepository(SoftwareCatalog catalog, kr.co.mcmp.softwarecatalog.application.model.HelmChart helmChart) {
-        String imageName = helmChart.getImageRepository();
-        
-        // imageRepository가 null이거나 비어있으면 기본값 사용
-        if (imageName == null || imageName.isEmpty()) {
-            // Helm Chart의 chartName을 기반으로 이미지 이름 생성
-            imageName = helmChart.getChartName().toLowerCase().replaceAll("\\s+", "-");
+    /**
+     * Helm Chart가 정의한 이미지 Registry/Repository/Tag를 그대로 사용하도록 기존 공통 이미지
+     * override는 CLI 인자에서 제외하고, 이미지와 무관한 배포 설정만 전달합니다.
+     */
+    static java.util.List<String> buildHelmSetArguments(Map<String, String> values) {
+        java.util.List<String> arguments = new java.util.ArrayList<>();
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            if (LEGACY_CONTAINER_IMAGE_OVERRIDE_KEYS.contains(entry.getKey())) {
+                continue;
+            }
+            arguments.add("--set");
+            arguments.add(entry.getKey() + "=" + entry.getValue());
         }
-        
-        // Nexus 이미지 경로인지 확인 (IP:포트/저장소/이미지:태그 형식)
-        if (imageName.matches("^\\d+\\.\\d+\\.\\d+\\.\\d+:\\d+/[^/]+/.*")) {
-            // Nexus 이미지 경로인 경우 그대로 사용
-            log.info("Nexus 이미지 경로 사용: {}", imageName);
-            return imageName;
-        }
-        
-        // docker.io/ 중복 제거
-        String cleanImageName = imageName.replaceAll("^(docker\\.io/)+", "");
-        cleanImageName = cleanImageName.trim();
-        
-        // 여전히 비어있으면 chartName 사용
-        if (cleanImageName.isEmpty()) {
-            cleanImageName = helmChart.getChartName().toLowerCase().replaceAll("\\s+", "-");
-        }
-        
-        // 숫자만 있는 경우 문자열로 변환하고 적절한 prefix 추가
-        if (cleanImageName.matches("^\\d+$")) {
-            cleanImageName = "app-" + cleanImageName;
-        }
-        
-        log.info("이미지 레포지토리 보정: '{}' -> '{}'", helmChart.getImageRepository(), cleanImageName);
-        return cleanImageName;
+        return arguments;
     }
 
     private String getReleaseNameFromHistory(Long catalogId, String clusterName, String namespace) {
@@ -566,7 +520,15 @@ public class HelmChartService {
     }
 
     public Path createTempKubeconfigFile(String kubeconfigYaml) throws IOException {
-        Path tempFile = Files.createTempFile("kubeconfig", ".yaml");
+        Path tempFile;
+        try {
+            tempFile = Files.createTempFile(
+                    "kubeconfig",
+                    ".yaml",
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+        } catch (UnsupportedOperationException e) {
+            tempFile = Files.createTempFile("kubeconfig", ".yaml");
+        }
         Files.write(tempFile, kubeconfigYaml.getBytes(StandardCharsets.UTF_8));
         return tempFile;
     }
@@ -614,7 +576,7 @@ public class HelmChartService {
             tempKubeconfigPath = createTempKubeconfigFile(getKubeconfigForCluster(namespace, clusterName));
             ensureMetricsServer(client, tempKubeconfigPath);
         } catch (Exception e) {
-            throw new RuntimeException("metrics-server installation failed", e);
+            throw new RuntimeException("Kubernetes metrics API preparation failed", e);
         } finally {
             deleteTempFile(tempKubeconfigPath);
         }
@@ -644,17 +606,31 @@ public class HelmChartService {
     }
 
     private void ensureMetricsServer(KubernetesClient client, Path tempKubeconfigPath) {
-        if (isMetricsServerReady(client)) {
-            log.info("metrics-server is already ready.");
+        KubernetesMetricsApiService.Availability availability = kubernetesMetricsApiService.check(client);
+        if (availability == KubernetesMetricsApiService.Availability.AVAILABLE) {
+            log.info("metrics.k8s.io API is already available. Reusing the cluster-provided metrics service.");
             return;
         }
 
-        if (!isMetricsServerReleaseInstalled(tempKubeconfigPath)) {
-            installMetricsServerWithHelm(tempKubeconfigPath);
-        } else {
+        if (isMetricsServerReleaseInstalled(tempKubeconfigPath)) {
             log.info("metrics-server Helm release already exists. Waiting for readiness.");
+            waitForMetricsServerReady(client);
+            return;
         }
 
+        if (availability == KubernetesMetricsApiService.Availability.TEMPORARILY_UNAVAILABLE) {
+            log.info("metrics.k8s.io API is registered but temporarily unavailable. Waiting without installing a duplicate metrics-server.");
+            waitForMetricsServerReady(client);
+            return;
+        }
+
+        if (hasExistingMetricsServerResources(client)) {
+            throw new IllegalStateException(
+                    "Existing non-Helm metrics-server resources were found while metrics.k8s.io is unavailable. "
+                            + "Refusing to install a duplicate release.");
+        }
+
+        installMetricsServerWithHelm(tempKubeconfigPath);
         waitForMetricsServerReady(client);
     }
 
@@ -663,8 +639,23 @@ public class HelmChartService {
             String releaseList = runHelmListCliInNamespace(METRICS_SERVER_NAMESPACE, tempKubeconfigPath);
             return releaseList != null && releaseList.contains("\"name\":\"" + METRICS_SERVER_RELEASE + "\"");
         } catch (Exception e) {
-            log.info("Failed to check metrics-server Helm release: {}", e.getMessage());
-            return false;
+            throw new IllegalStateException("Unable to verify the existing metrics-server Helm release", e);
+        }
+    }
+
+    private boolean hasExistingMetricsServerResources(KubernetesClient client) {
+        try {
+            return client.services()
+                            .inNamespace(METRICS_SERVER_NAMESPACE)
+                            .withName(METRICS_SERVER_RELEASE)
+                            .get() != null
+                    || client.apps()
+                            .deployments()
+                            .inNamespace(METRICS_SERVER_NAMESPACE)
+                            .withName(METRICS_SERVER_RELEASE)
+                            .get() != null;
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to inspect existing metrics-server resources", e);
         }
     }
 
@@ -713,53 +704,8 @@ public class HelmChartService {
     }
 
     private boolean isMetricsServerReady(KubernetesClient client) {
-        try {
-            boolean metricsApiAvailable = isMetricsApiAvailable(client);
-            var deployment = client.apps().deployments()
-                    .inNamespace(METRICS_SERVER_NAMESPACE)
-                    .withName(METRICS_SERVER_RELEASE)
-                    .get();
-            if (deployment == null) {
-                if (metricsApiAvailable) {
-                    log.info("metrics.k8s.io API is already available without Helm-managed metrics-server deployment.");
-                    return true;
-                }
-                return false;
-            }
-
-            Integer readyReplicas = deployment != null && deployment.getStatus() != null
-                    ? deployment.getStatus().getReadyReplicas()
-                    : null;
-            Integer desiredReplicas = deployment != null && deployment.getSpec() != null
-                    ? deployment.getSpec().getReplicas()
-                    : null;
-            boolean deploymentReady = readyReplicas != null
-                    && readyReplicas > 0
-                    && (desiredReplicas == null || readyReplicas >= desiredReplicas);
-
-            return deploymentReady && metricsApiAvailable;
-        } catch (Exception e) {
-            log.debug("metrics-server readiness check failed: {}", e.getMessage());
-            return false;
-        }
-    }
-
-    private boolean isMetricsApiAvailable(KubernetesClient client) {
-        ResourceDefinitionContext context = new ResourceDefinitionContext.Builder()
-                .withGroup("metrics.k8s.io")
-                .withVersion("v1beta1")
-                .withKind("NodeMetrics")
-                .withPlural("nodes")
-                .withNamespaced(false)
-                .build();
-
-        try {
-            client.genericKubernetesResources(context).list();
-            return true;
-        } catch (Exception e) {
-            log.debug("metrics.k8s.io API is not ready yet: {}", e.getMessage());
-            return false;
-        }
+        return kubernetesMetricsApiService.check(client)
+                == KubernetesMetricsApiService.Availability.AVAILABLE;
     }
 
     /**
@@ -1274,10 +1220,7 @@ public class HelmChartService {
             cmd.add("--values");
             cmd.add(valuesFile.toString());
         }
-        for (java.util.Map.Entry<String,String> e : values.entrySet()) {
-            cmd.add("--set");
-            cmd.add(e.getKey() + "=" + e.getValue());
-        }
+        cmd.addAll(buildHelmSetArguments(values));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         Process p = pb.start();
         int ec = p.waitFor();
@@ -1313,10 +1256,7 @@ public class HelmChartService {
             cmd.add("--values");
             cmd.add(valuesFile.toString());
         }
-        for (java.util.Map.Entry<String,String> e : values.entrySet()) {
-            cmd.add("--set");
-            cmd.add(e.getKey() + "=" + e.getValue());
-        }
+        cmd.addAll(buildHelmSetArguments(values));
         ProcessBuilder pb = new ProcessBuilder(cmd);
         Process p = pb.start();
         int ec = p.waitFor();

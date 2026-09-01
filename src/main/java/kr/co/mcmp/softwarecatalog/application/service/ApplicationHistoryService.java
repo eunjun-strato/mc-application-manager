@@ -43,8 +43,13 @@ public interface ApplicationHistoryService {
      * @param status 상태
      * @param user 사용자
      */
-    void createApplicationStatusForVm(DeploymentHistory history, String vmId, String publicIp, 
-                                    Integer servicePort, String status, User user);
+    default void createApplicationStatusForVm(DeploymentHistory history, String vmId, String publicIp,
+                                    Integer servicePort, String status, User user) {
+        createApplicationStatusForVm(history, vmId, publicIp, servicePort, status, user, null);
+    }
+
+    void createApplicationStatusForVm(DeploymentHistory history, String vmId, String publicIp,
+                                    Integer servicePort, String status, User user, String containerId);
     
     /**
      * VM별 DeploymentHistory를 생성합니다. (다중 VM 배포용)
@@ -105,5 +110,4 @@ public interface ApplicationHistoryService {
      */
     List<DeploymentLog> getDeploymentLogs(Long deploymentId, String username);
 }
-
 

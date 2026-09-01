@@ -57,6 +57,28 @@ const ACTION_DISABLED_STATUSES = new Set([
   'FAILED'
 ])
 
+const HEALTH_CHECKING_STATUSES = new Set([
+  'PREPARING_RUNTIME',
+  'PREPARING_METRICS_SERVER',
+  'PREPARING_INGRESS_NGINX',
+  'DEPLOYING',
+  'INSTALL',
+  'IN_PROGRESS',
+  'PENDING',
+  'START',
+  'STARTING',
+  'RESTART',
+  'RESTARTING',
+  'RUN',
+  'RUNNING',
+  'SUCCESS'
+])
+
+export interface ApplicationHealthDisplay {
+  label: 'Healthy' | 'Unhealthy' | 'Checking' | 'Unknown'
+  className: string
+}
+
 const normalizeStatus = (status: string | null | undefined) => String(status || '').trim().toUpperCase()
 
 export const getApplicationStatusLabel = (status: string | null | undefined) => {
@@ -90,4 +112,20 @@ export const getApplicationStatusIndicatorClass = (status: string | null | undef
 
 export const isApplicationActionDisabledStatus = (status: string | null | undefined) => {
   return ACTION_DISABLED_STATUSES.has(normalizeStatus(status))
+}
+
+export const getApplicationHealthDisplay = (
+  healthCheck: boolean | null | undefined,
+  status: string | null | undefined
+): ApplicationHealthDisplay => {
+  if (healthCheck === true) {
+    return { label: 'Healthy', className: 'text-success' }
+  }
+  if (healthCheck === false) {
+    return { label: 'Unhealthy', className: 'text-danger' }
+  }
+  if (HEALTH_CHECKING_STATUSES.has(normalizeStatus(status))) {
+    return { label: 'Checking', className: 'text-warning' }
+  }
+  return { label: 'Unknown', className: 'text-muted' }
 }

@@ -126,6 +126,25 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
             .collect(Collectors.toList());
     }
 
+    @Override
+    public List<ApplicationStatusDto> getApplicationGroups(String namespace) {
+        if (StringUtils.isBlank(namespace)) {
+            throw new IllegalArgumentException("Namespace cannot be blank");
+        }
+
+        return sortApplicationStatuses(applicationStatusRepository.findByNamespace(namespace));
+    }
+
+    private List<ApplicationStatusDto> sortApplicationStatuses(List<ApplicationStatus> applications) {
+        return applications.stream()
+                .map(this::toStatusDto)
+                .sorted(Comparator
+                        .comparing(ApplicationStatusDto::getCheckedAt, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(ApplicationStatusDto::getDeploymentHistoryId, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(ApplicationStatusDto::getId, Comparator.nullsLast(Comparator.reverseOrder())))
+                .collect(Collectors.toList());
+    }
+
     private ApplicationStatusDto toStatusDto(ApplicationStatus status) {
         ApplicationStatusDto dto = ApplicationStatusDto.fromEntity(status);
         if (isEffectivelyUninstalled(status)) {
@@ -178,6 +197,26 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
                 .orElseThrow(() -> new EntityNotFoundException("Application status not found for user: " + username));
     
         return ApplicationStatusDto.fromEntity(status);
+    }
+
+    @Override
+    public ApplicationStatusDto getLatestApplicationStatus(String username, String namespace) {
+        if (StringUtils.isBlank(username)) {
+            throw new IllegalArgumentException("Username cannot be blank");
+        }
+        if (StringUtils.isBlank(namespace)) {
+            throw new IllegalArgumentException("Namespace cannot be blank");
+        }
+
+        User user = userService.findUserByUsername(username)
+                .orElseThrow(() -> new EntityNotFoundException("User not found with username: " + username));
+
+        ApplicationStatus status = applicationStatusRepository
+                .findTopByNamespaceAndExecutedByOrderByCheckedAtDesc(namespace, user)
+                .orElseThrow(() -> new EntityNotFoundException(
+                        "Application status not found for user in namespace: " + namespace));
+
+        return toStatusDto(status);
     }
     
     @Override
@@ -344,4 +383,3 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
     }
 
 }
-

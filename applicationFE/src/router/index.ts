@@ -34,6 +34,11 @@ const router = createRouter({
       component: () => import('@/views/repository/RepositoryDetail.vue' as any)
     },
     {
+      path: `/web/softwareCatalog/install`,
+      name: 'softwareCatalogInstall',
+      component: () => import('@/views/softwareCatalog/InstallSoftwareIframe.vue' as any)
+    },
+    {
       path: `/web/softwareCatalog`,
       name: 'softwareCatalog',
       component: () => import('@/views/softwareCatalog/SoftwareCatalog.vue' as any)

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AM Install SW iframe 연동 테스트</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #182230; background: #f5f7fa; }
+    main { display: grid; grid-template-columns: minmax(320px, 420px) 1fr; min-height: 100vh; }
+    aside { padding: 24px; border-right: 1px solid #d9e0e8; background: #fff; overflow-y: auto; }
+    section { padding: 16px; min-width: 0; }
+    h1 { margin: 0 0 8px; font-size: 1.35rem; }
+    h2 { margin: 24px 0 10px; font-size: 1rem; }
+    p { color: #52606f; line-height: 1.5; }
+    label { display: block; margin: 10px 0 4px; font-size: .82rem; font-weight: 650; }
+    input, select, button { width: 100%; min-height: 38px; border: 1px solid #c6cfda; border-radius: 6px; padding: 8px 10px; background: #fff; }
+    button { margin-top: 10px; border-color: #206bc4; color: #fff; background: #206bc4; cursor: pointer; font-weight: 650; }
+    button.secondary { color: #206bc4; background: #fff; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .note { padding: 10px 12px; border-radius: 6px; color: #5b4b00; background: #fff7cc; font-size: .85rem; }
+    iframe { width: 100%; height: calc(100vh - 190px); min-height: 680px; border: 1px solid #c6cfda; border-radius: 8px; background: #fff; }
+    pre { height: 140px; margin: 12px 0 0; padding: 12px; overflow: auto; border-radius: 8px; color: #d8e4f0; background: #182230; font-size: .78rem; white-space: pre-wrap; }
+    @media (max-width: 960px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid #d9e0e8; } }
+  </style>
+</head>
+<body>
+<main>
+  <aside>
+    <h1>Install SW iframe 테스트</h1>
+    <p>MC-WEB-CONSOLE이 담당할 팝업·iframe·Project 컨텍스트 전달만 로컬에서 재현합니다.</p>
+    <div class="note">실제 토큰이나 자원 ID는 이 HTML에 저장되지 않습니다. 입력값은 현재 브라우저 메모리에서만 사용됩니다.</div>
+
+    <h2>AM 및 대상</h2>
+    <label for="amBaseUrl">AM base URL</label>
+    <input id="amBaseUrl" value="http://localhost:18084">
+    <div class="row">
+      <div>
+        <label for="targetType">Target type</label>
+        <select id="targetType">
+          <option value="VM">VM</option>
+          <option value="K8S">K8S</option>
+        </select>
+      </div>
+      <div>
+        <label for="requestId">Request ID</label>
+        <input id="requestId" value="local-test-001">
+      </div>
+    </div>
+    <label for="mciId">MCI ID (VM)</label>
+    <input id="mciId" placeholder="mci-01">
+    <label for="vmId">VM ID (VM)</label>
+    <input id="vmId" placeholder="vm-01">
+    <label for="clusterId">Cluster ID (K8S)</label>
+    <input id="clusterId" placeholder="cluster-01">
+
+    <h2>Web Console Project 컨텍스트</h2>
+    <div class="row">
+      <div>
+        <label for="workspaceId">Workspace ID</label>
+        <input id="workspaceId" placeholder="workspace-id">
+      </div>
+      <div>
+        <label for="projectId">Project ID</label>
+        <input id="projectId" placeholder="project-id">
+      </div>
+    </div>
+    <label for="namespaceId">Tumblebug namespace</label>
+    <input id="namespaceId" placeholder="default">
+    <label for="accessToken">Keycloak access token</label>
+    <input id="accessToken" type="password" autocomplete="off" placeholder="eyJ…">
+
+    <button id="loadFrame" type="button">1. iframe 열기</button>
+    <button id="sendContext" class="secondary" type="button">2. Project 컨텍스트 전송</button>
+  </aside>
+
+  <section>
+    <iframe id="installFrame" title="AM Install Software"></iframe>
+    <pre id="eventLog" aria-live="polite">이벤트 대기 중…</pre>
+  </section>
+</main>
+
+<script>
+  const frame = document.getElementById('installFrame')
+  const eventLog = document.getElementById('eventLog')
+  let frameOrigin = ''
+
+  const field = (id) => document.getElementById(id).value.trim()
+  const appendLog = (message, value) => {
+    const time = new Date().toLocaleTimeString()
+    const detail = value === undefined ? '' : `\n${JSON.stringify(value, null, 2)}`
+    const line = `[${time}] ${message}${detail}`
+    eventLog.textContent = eventLog.textContent === '이벤트 대기 중…'
+      ? line
+      : `${line}\n\n${eventLog.textContent}`
+  }
+
+  const buildInstallUrl = () => {
+    const url = new URL('/web/softwareCatalog/install', field('amBaseUrl'))
+    const type = field('targetType')
+    url.searchParams.set('targetType', type)
+    url.searchParams.set('requestId', field('requestId'))
+    if (type === 'VM') {
+      url.searchParams.set('mciId', field('mciId'))
+      url.searchParams.set('vmId', field('vmId'))
+    } else {
+      url.searchParams.set('clusterId', field('clusterId'))
+    }
+    return url
+  }
+
+  const sendContext = () => {
+    if (!frame.contentWindow || !frameOrigin) {
+      appendLog('먼저 iframe을 여세요.')
+      return
+    }
+
+    const accessToken = field('accessToken')
+    const workspaceId = field('workspaceId')
+    const projectId = field('projectId')
+    const namespaceId = field('namespaceId')
+    if (!accessToken || !workspaceId || !projectId || !namespaceId) {
+      appendLog('토큰, Workspace, Project, namespace를 모두 입력해야 합니다.')
+      return
+    }
+
+    frame.contentWindow.postMessage({
+      accessToken,
+      workspaceInfo: { id: workspaceId, name: workspaceId },
+      projectInfo: { id: projectId, name: projectId, ns_id: namespaceId },
+      operationId: field('requestId')
+    }, frameOrigin)
+    appendLog('Project 컨텍스트를 iframe에 전송했습니다. (토큰은 로그에 표시하지 않음)')
+  }
+
+  document.getElementById('loadFrame').addEventListener('click', () => {
+    try {
+      const url = buildInstallUrl()
+      frameOrigin = url.origin
+      frame.src = url.toString()
+      appendLog('iframe을 열었습니다.', { url: url.toString() })
+    } catch (error) {
+      appendLog('AM URL이 올바르지 않습니다.', { message: error.message })
+    }
+  })
+
+  document.getElementById('sendContext').addEventListener('click', sendContext)
+
+  frame.addEventListener('load', () => {
+    appendLog('iframe load 이벤트를 받았습니다. 컨텍스트를 입력했다면 자동 전송합니다.')
+    if (field('accessToken') && field('workspaceId') && field('projectId') && field('namespaceId')) {
+      sendContext()
+    }
+  })
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== frame.contentWindow) return
+    if (!event.data || event.data.type !== 'MCMP_AM_INSTALL_EVENT') return
+    appendLog(`AM 이벤트: ${event.data.status}`, event.data)
+  })
+</script>
+</body>
+</html>

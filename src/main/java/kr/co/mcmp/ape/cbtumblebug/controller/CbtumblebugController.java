@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -17,6 +18,7 @@ import kr.co.mcmp.ape.cbtumblebug.dto.NamespaceDto;
 import kr.co.mcmp.ape.cbtumblebug.dto.Spec;
 import kr.co.mcmp.ape.cbtumblebug.service.CbtumblebugService;
 import kr.co.mcmp.response.ResponseWrapper;
+import kr.co.mcmp.security.project.ProjectScopeAuthorizationService;
 import lombok.RequiredArgsConstructor;
 
 
@@ -27,45 +29,70 @@ import lombok.RequiredArgsConstructor;
 public class CbtumblebugController {
 
     private final CbtumblebugService cbtumblebugService;
+    private final ProjectScopeAuthorizationService projectScopeAuthorizationService;
 
     @GetMapping("/ns")
     @Operation(summary = "Retrieve all namespaces", description = "Fetches all registered namespaces.")
-    public ResponseEntity<ResponseWrapper<List<NamespaceDto>>> getAllNamespaces() {
-        List<NamespaceDto> result =  cbtumblebugService.getAllNamespaces();
+    public ResponseEntity<ResponseWrapper<List<NamespaceDto>>> getAllNamespaces(
+            HttpServletRequest httpRequest) {
+        String namespace = projectScopeAuthorizationService.getAuthorizedNamespace(httpRequest);
+        List<NamespaceDto> result = cbtumblebugService.getAllNamespaces();
+        if (!namespace.isBlank() && result != null) {
+            result = result.stream()
+                    .filter(item -> namespace.equals(item.getId()) || namespace.equals(item.getName()))
+                    .toList();
+        }
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
 
     @GetMapping("/ns/{nsId}/infra")
     @Operation(summary = "Retrieve MCIS for a specific namespace", description = "Fetches all MCIS belonging to the specified namespace.")
     public ResponseEntity<ResponseWrapper<List<MciDto>>> getMicsByNamespace(@Parameter(description = "Namespace ID", required = true)
-            @PathVariable String nsId) {
+            @PathVariable String nsId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, nsId);
         List<MciDto> result = cbtumblebugService.getMcisByNamespace(nsId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
     
     @GetMapping("/ns/{nsId}/infra/{mciId}")
     @Operation(summary = "Retrieve a specific MCI", description = "Fetches the specified MCI.")
-    public ResponseEntity<ResponseWrapper<MciDto>> getMicByMciId(@PathVariable String nsId, @PathVariable String mciId) {
+    public ResponseEntity<ResponseWrapper<MciDto>> getMicByMciId(
+            @PathVariable String nsId,
+            @PathVariable String mciId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, nsId);
         MciDto result =  cbtumblebugService.getMciByMciId(nsId, mciId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
     
     @GetMapping("/ns/{nsId}/k8scluster")
     @Operation(summary = "Retrieve k8sclusters for a specific namespace", description = "Fetches all k8sclusters belonging to the specified namespace.")
-    public ResponseEntity<ResponseWrapper<List<K8sClusterDto>>> getK8sCluster(@PathVariable String nsId) {
+    public ResponseEntity<ResponseWrapper<List<K8sClusterDto>>> getK8sCluster(
+            @PathVariable String nsId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, nsId);
         List<K8sClusterDto> result = cbtumblebugService.getAllK8sClusters(nsId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
 
     @GetMapping("/ns/{nsId}/k8scluster/{clusterName}")
     @Operation(summary = "Retrieve a specific k8scluster", description = "Fetches the specified k8scluster.")
-    public ResponseEntity<ResponseWrapper<K8sClusterDto>> getK8sClusterByName(@PathVariable String nsId, @PathVariable String clusterName) {
+    public ResponseEntity<ResponseWrapper<K8sClusterDto>> getK8sClusterByName(
+            @PathVariable String nsId,
+            @PathVariable String clusterName,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, nsId);
         K8sClusterDto result =  cbtumblebugService.getK8sClusterByName(nsId, clusterName);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
 
     @GetMapping("/ns/{nsId}/resources/spec/{specId}")
-    public ResponseEntity<ResponseWrapper<Spec>> getMethodName(@PathVariable String nsId, @PathVariable String specId) {
+    public ResponseEntity<ResponseWrapper<Spec>> getMethodName(
+            @PathVariable String nsId,
+            @PathVariable String specId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, nsId);
         Spec result =  cbtumblebugService.getSpecBySpecId(nsId, specId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }

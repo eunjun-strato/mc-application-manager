@@ -4,13 +4,13 @@
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title">{{ props.mode === 'update' ? 'Application Update' : 'Application Registration' }}</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" />
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close" :disabled="isSubmitting" />
         </div>
 
         <div class="modal-body" style="max-height: calc(100vh - 200px);overflow-y: auto;">
           <ul class="nav nav-tabs mb-3">
             <li class="nav-item">
-              <a class="nav-link" :class="{ active: currentStep === 1 }" href="javascript:void(0);" @click="onClickStep(1)">1. Package</a>
+              <a class="nav-link" :class="{ active: currentStep === 1 }" href="javascript:void(0);" @click="onClickStep(1)">1. {{ props.mode === 'update' ? 'Package' : 'Source & Package' }}</a>
             </li>
             <li class="nav-item">
               <a class="nav-link" :class="{ active: currentStep === 2 }" href="javascript:void(0);" @click="onClickStep(2)">2. General</a>
@@ -24,47 +24,156 @@
           </ul>
 
           <div v-show="currentStep === 1">
+            <div v-if="props.mode !== 'update'" class="mb-4">
+              <label class="form-label required">Registration Source</label>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="source-option" :class="{ selected: registrationSource === 'existing' }" for="sourceExisting">
+                    <input
+                      id="sourceExisting"
+                      v-model="registrationSource"
+                      class="form-check-input"
+                      type="radio"
+                      name="registrationSource"
+                      value="existing"
+                      :disabled="isSubmitting">
+                    <span>
+                      <strong>Existing Package</strong>
+                      <small>Register a package already available in MCMP.</small>
+                    </span>
+                  </label>
+                </div>
+                <div class="col-md-6">
+                  <label class="source-option" :class="{ selected: registrationSource === 'public' }" for="sourcePublic">
+                    <input
+                      id="sourcePublic"
+                      v-model="registrationSource"
+                      class="form-check-input"
+                      type="radio"
+                      name="registrationSource"
+                      value="public"
+                      :disabled="isSubmitting">
+                    <span>
+                      <strong>Public Registry</strong>
+                      <small>Search, import, and register in one flow.</small>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
             <div class="mb-3">
               <label class="form-label required">Target</label>
               <div class="d-flex align-items-center">
                 <div class="form-check me-3">
-                  <input class="form-check-input" type="radio" name="target" value="VM" v-model="catalogDto.target" id="targetVM" :disabled="props.mode === 'update'"/>
+                  <input class="form-check-input" type="radio" name="target" value="VM" v-model="catalogDto.target" id="targetVM" :disabled="props.mode === 'update' || isSubmitting"/>
                   <label class="form-check-label" for="targetVM">VM</label>
                 </div>
                 <div class="form-check">
-                  <input class="form-check-input" type="radio" name="target" value="K8S" v-model="catalogDto.target" id="targetK8S" :disabled="props.mode === 'update'" />
+                  <input class="form-check-input" type="radio" name="target" value="K8S" v-model="catalogDto.target" id="targetK8S" :disabled="props.mode === 'update' || isSubmitting" />
                   <label class="form-check-label" for="targetK8S">K8S</label>
                 </div>
               </div>
-              <!-- <div class="mt-2">
-                <small class="text-muted">VM : DockerHub, K8S : Artifact Hub</small>
-              </div> -->
             </div>
 
-            <div class="mb-3">
-              <label class="form-label required">Category</label>
-              <select class="form-select" v-model="catalogDto.category" :disabled="props.mode === 'update'">
-                <option value="">Select Category</option>
-                <option v-for="category in categoryList" :value="category.value" :key="category.key">{{ category.value }}</option>
-              </select>
-            </div>
+            <template v-if="usesExistingPackage">
+              <div class="mb-3">
+                <label class="form-label required">Category</label>
+                <select class="form-select" v-model="catalogDto.category" :disabled="props.mode === 'update'">
+                  <option value="">Select Category</option>
+                  <option v-for="category in categoryList" :value="category.value" :key="category.key">{{ category.value }}</option>
+                </select>
+              </div>
 
-            <div class="w-100 d-flex justify-content-between">
-              <div class="mb-3 w-50" style="margin-right: 10px;">
-                <label class="form-label required">Package</label>
-                <select class="form-select" v-model="catalogDto.packageName" :disabled="props.mode === 'update'">
-                  <option value="">Select Package</option>
-                  <option v-for="data in packageList" :value="data.value" :key="data.key">{{ data.value }}</option>
-                </select>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label required">Package</label>
+                  <select class="form-select" v-model="catalogDto.packageName" :disabled="props.mode === 'update'">
+                    <option value="">Select Package</option>
+                    <option v-for="data in packageList" :value="data.value" :key="data.key">{{ data.value }}</option>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label required">Version</label>
+                  <select class="form-select" v-model="catalogDto.version" :disabled="props.mode === 'update'">
+                    <option value="">Select Version</option>
+                    <option v-for="version in versionList" :value="version.value" :key="version.key">{{ version.value }}</option>
+                  </select>
+                </div>
               </div>
-              <div class="mb-3 w-50">
-                <label class="form-label required">Version</label>
-                <select class="form-select" v-model="catalogDto.version" :disabled="props.mode === 'update'">
-                  <option value="">Select Version</option>
-                  <option v-for="version in versionList" :value="version.value" :key="version.key">{{ version.value }}</option>
-                </select>
+            </template>
+
+            <template v-else>
+              <div class="alert alert-info py-2 mb-3" role="status">
+                <strong>{{ registryProviderName }}</strong> will be searched for the selected target.
+                The package is imported only when you complete registration.
               </div>
-            </div>
+
+              <form class="mb-3" @submit.prevent="searchPublicRegistry">
+                <label class="form-label required" for="registrySearchInput">Search {{ registryProviderName }}</label>
+                <div class="input-group">
+                  <input
+                    id="registrySearchInput"
+                    v-model="registrySearchKeyword"
+                    type="search"
+                    class="form-control"
+                    :placeholder="registrySearchPlaceholder"
+                    :disabled="registrySearchLoading || isSubmitting">
+                  <button class="btn btn-outline-primary" type="submit" :disabled="registrySearchLoading || isSubmitting">
+                    {{ registrySearchLoading ? 'Searching...' : 'Search' }}
+                  </button>
+                </div>
+                <div v-if="registrySearchError" class="text-danger small mt-2">{{ registrySearchError }}</div>
+              </form>
+
+              <div v-if="registrySearchLoading" class="text-center text-muted py-4">Searching {{ registryProviderName }}...</div>
+              <div v-else-if="registrySearchPerformed && registrySearchResults.length === 0" class="text-muted py-3">
+                No matching packages found.
+              </div>
+              <div v-else-if="registrySearchResults.length > 0" class="registry-results list-group mb-3">
+                <button
+                  v-for="(result, index) in registrySearchResults"
+                  :key="getRegistryResultKey(result, index)"
+                  type="button"
+                  class="list-group-item list-group-item-action"
+                  :class="{ active: isRegistryResultSelected(result) }"
+                  :disabled="registryVersionLoading || isSubmitting"
+                  @click="selectRegistryPackage(result)">
+                  <div class="d-flex align-items-start gap-3">
+                    <img
+                      v-if="getRegistryLogo(result)"
+                      :src="getRegistryLogo(result)"
+                      class="rounded registry-logo"
+                      alt=""
+                      width="40"
+                      height="40">
+                    <div class="flex-fill text-start">
+                      <div class="fw-semibold">{{ result?.name || result?.packageId || 'Unnamed package' }}</div>
+                      <div class="small registry-description">
+                        {{ truncateText(getRegistryDescription(result), 120) }}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              <div v-if="selectedRegistryPackage" class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label required">Version</label>
+                  <select class="form-select" v-model="catalogDto.version" :disabled="registryVersionLoading || isSubmitting">
+                    <option value="">{{ registryVersionLoading ? 'Loading versions...' : 'Select Version' }}</option>
+                    <option v-for="version in registryVersionList" :value="version.value" :key="version.key">{{ version.value }}</option>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label required">Category</label>
+                  <select class="form-select" v-model="catalogDto.category" :disabled="isSubmitting">
+                    <option value="">Select Category</option>
+                    <option v-for="category in publicCategoryList" :value="category.value" :key="category.key">{{ category.value }}</option>
+                  </select>
+                </div>
+              </div>
+            </template>
           </div>
 
           <div v-show="currentStep === 2">
@@ -295,13 +404,13 @@
         </div>
 
         <div class="modal-footer">
-          <a class="btn btn-link link-secondary" data-bs-dismiss="modal" @click="reset">
+          <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal" :disabled="isSubmitting" @click="reset">
             Cancel
-          </a>
+          </button>
           <div class="ms-auto d-flex gap-2">
-            <button class="btn btn-outline-secondary" :disabled="currentStep === 1" @click="prevStep">Prev</button>
-            <button class="btn btn-primary" v-if="currentStep < 4" :disabled="!canGoNext" @click="nextStep">Next</button>
-            <button class="btn btn-primary" v-else :disabled="!canGoNext" @click="props.mode === 'update' ? update() : create()">{{ props.mode === 'update' ? 'Update' : 'Create' }}</button>
+            <button class="btn btn-outline-secondary" :disabled="currentStep === 1 || isSubmitting" @click="prevStep">Prev</button>
+            <button class="btn btn-primary" v-if="currentStep < 4" :disabled="!canGoNext || isSubmitting" @click="nextStep">Next</button>
+            <button class="btn btn-primary" v-else :disabled="!canGoNext || isSubmitting" @click="props.mode === 'update' ? update() : create()">{{ submitButtonLabel }}</button>
           </div>
         </div>
       </div>
@@ -310,11 +419,22 @@
 </template>
 
 <script setup lang="ts">
-import { IconPlus, IconMinus } from '@tabler/icons-vue'
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useToast } from 'vue-toastification'
-import { createSoftwareCatalog, updateSoftwareCatalog, getSoftwareCaltalogDetail, getPackageList, getCategoryList, getVersionList } from '../../../api/softwareCatalog'
-import type { PackageInfoDTO } from '../../type/type'
+import {
+  createSoftwareCatalog,
+  updateSoftwareCatalog,
+  getSoftwareCaltalogDetail,
+  getPackageList,
+  getCategoryList,
+  getVersionList,
+  searchDockerhub,
+  searchArtifacthubhub,
+  getApplicationTagForDockerHub,
+  getApplicationTagForArtifactHub,
+  upLoadDockerHubApplication,
+  upLoadArtifactHubApplication
+} from '../../../api/softwareCatalog'
 
 interface Props {
   show?: boolean
@@ -332,6 +452,59 @@ const isInitializing = ref(false)
 const isModalOpen = ref(false)
 const catalogId = ref(0 as any)
 const catalogInfo = ref({} as any)
+
+type RegistrationSource = 'existing' | 'public'
+
+const DEFAULT_CATEGORY_OPTIONS = [
+  'AI_MACHINE_LEARNING',
+  'DATABASE',
+  'INTEGRATION_AND_DELIVERY',
+  'MONITORING_AND_LOGGING',
+  'NETWORKING',
+  'SECURITY',
+  'STORAGE',
+  'STREAMING_AND_MESSAGING'
+]
+
+const CATEGORY_ID_MAP: Record<string, string> = {
+  '1': 'AI_MACHINE_LEARNING',
+  '2': 'DATABASE',
+  '3': 'INTEGRATION_AND_DELIVERY',
+  '4': 'MONITORING_AND_LOGGING',
+  '5': 'NETWORKING',
+  '6': 'SECURITY',
+  '7': 'STORAGE',
+  '8': 'STREAMING_AND_MESSAGING'
+}
+
+const CATEGORY_NAME_MAP: Record<string, string> = {
+  'AI / MACHINE LEARNING': 'AI_MACHINE_LEARNING',
+  'AI MACHINE LEARNING': 'AI_MACHINE_LEARNING',
+  'DATABASE': 'DATABASE',
+  'INTEGRATION AND DELIVERY': 'INTEGRATION_AND_DELIVERY',
+  'MONITORING AND LOGGING': 'MONITORING_AND_LOGGING',
+  'MONITORING & LOGGING': 'MONITORING_AND_LOGGING',
+  'NETWORKING': 'NETWORKING',
+  'SECURITY': 'SECURITY',
+  'STORAGE': 'STORAGE',
+  'STREAMING AND MESSAGING': 'STREAMING_AND_MESSAGING'
+}
+
+const registrationSource = ref<RegistrationSource>('existing')
+const registrySearchKeyword = ref('')
+const registrySearchResults = ref<any[]>([])
+const registrySearchLoading = ref(false)
+const registrySearchPerformed = ref(false)
+const registrySearchError = ref('')
+const selectedRegistryPackage = ref<any | null>(null)
+const registryVersionList = ref<{ key: string, value: string }[]>([])
+const registryVersionLoading = ref(false)
+const publicCategoryList = ref<{ key: string, value: string }[]>(
+  DEFAULT_CATEGORY_OPTIONS.map(value => ({ key: value, value }))
+)
+const isSubmitting = ref(false)
+const registryImporting = ref(false)
+const importedRegistryKey = ref('')
 
 // ------------------------------------------------------------ Life Cycle ------------------------------------------------------------
 const wizardModal = ref<HTMLElement | null>(null)
@@ -435,6 +608,19 @@ const portMappings = ref([
 // ------------------------------------------------------------ Data ------------------------------------------------------------
 
 // ------------------------------------------------------------ Computed ------------------------------------------------------------
+const usesExistingPackage = computed(() => props.mode === 'update' || registrationSource.value === 'existing')
+const registryProviderName = computed(() => catalogDto.value.target === 'VM' ? 'Docker Hub' : 'Artifact Hub')
+const registrySearchPlaceholder = computed(() => catalogDto.value.target === 'VM'
+  ? 'Search official container images'
+  : 'Search official Helm charts')
+
+const submitButtonLabel = computed(() => {
+  if (props.mode === 'update') return isSubmitting.value ? 'Updating...' : 'Update'
+  if (registryImporting.value) return 'Importing...'
+  if (isSubmitting.value) return 'Creating...'
+  return registrationSource.value === 'public' ? 'Import & Create' : 'Create'
+})
+
 const canGoNext = computed(() => {
   if (currentStep.value === 1) {
     return catalogDto.value.target && 
@@ -490,8 +676,184 @@ const prevStep = () => {
   if (currentStep.value > 1) currentStep.value -= 1
 }
 
+const resetRegistrySelection = (clearKeyword = true) => {
+  if (clearKeyword) registrySearchKeyword.value = ''
+  registrySearchResults.value = []
+  registrySearchPerformed.value = false
+  registrySearchError.value = ''
+  selectedRegistryPackage.value = null
+  registryVersionList.value = []
+  registrySearchLoading.value = false
+  registryVersionLoading.value = false
+  registryImporting.value = false
+  importedRegistryKey.value = ''
+}
+
+const normalizeCategoryValue = (category: any): string => {
+  if (category === null || category === undefined) return ''
+
+  if (typeof category === 'object') {
+    return normalizeCategoryValue(
+      category.value ||
+      category.key ||
+      category.name ||
+      category.displayName ||
+      category.display_name ||
+      category.category
+    )
+  }
+
+  const rawValue = String(category).trim()
+  if (!rawValue) return ''
+  if (CATEGORY_ID_MAP[rawValue]) return CATEGORY_ID_MAP[rawValue]
+
+  const normalizedDisplayName = rawValue
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase()
+
+  if (CATEGORY_NAME_MAP[normalizedDisplayName]) {
+    return CATEGORY_NAME_MAP[normalizedDisplayName]
+  }
+
+  return rawValue
+    .replace(/&/g, 'AND')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_')
+    .toUpperCase()
+}
+
+const mergePublicCategories = (categories: any[] = []) => {
+  const categoryMap = new Map<string, { key: string, value: string }>()
+  ;[...DEFAULT_CATEGORY_OPTIONS, ...publicCategoryList.value, ...categories].forEach(category => {
+    const normalized = normalizeCategoryValue(category?.value || category?.key || category)
+    if (normalized) categoryMap.set(normalized, { key: normalized, value: normalized })
+  })
+  publicCategoryList.value = Array.from(categoryMap.values()).sort((a, b) => a.value.localeCompare(b.value))
+}
+
+const loadPublicCategories = async () => {
+  mergePublicCategories()
+  const results = await Promise.allSettled([
+    getCategoryList({ target: 'DOCKER', availableOnly: false }),
+    getCategoryList({ target: 'HELM', availableOnly: false })
+  ])
+  const categories = results.flatMap(result => result.status === 'fulfilled' ? (result.value.data || []) : [])
+  mergePublicCategories(categories)
+}
+
+const getRegistryResultKey = (result: any, index = 0) =>
+  String(result?.id || result?.packageId || `${result?.repository?.name || 'registry'}-${result?.name || index}`)
+
+const isRegistryResultSelected = (result: any) =>
+  Boolean(selectedRegistryPackage.value) &&
+  getRegistryResultKey(selectedRegistryPackage.value) === getRegistryResultKey(result)
+
+const getRegistryLogo = (result: any) => result?.logo_url?.small || result?.logo_url?.large || ''
+const getRegistryDescription = (result: any) => result?.short_description || result?.description || ''
+const truncateText = (value: any, maxLength: number) => {
+  const text = String(value || '')
+  return text.length > maxLength ? `${text.substring(0, maxLength)}...` : text
+}
+
+const searchPublicRegistry = async () => {
+  const keyword = registrySearchKeyword.value.trim()
+  registrySearchError.value = ''
+  registrySearchPerformed.value = false
+  registrySearchResults.value = []
+  selectedRegistryPackage.value = null
+  registryVersionList.value = []
+  catalogDto.value.packageName = ''
+  catalogDto.value.version = ''
+
+  if (!keyword) {
+    registrySearchError.value = 'Enter a search keyword.'
+    return
+  }
+
+  registrySearchKeyword.value = keyword
+  registrySearchLoading.value = true
+  try {
+    const { data } = catalogDto.value.target === 'VM'
+      ? await searchDockerhub(keyword)
+      : await searchArtifacthubhub(keyword)
+    const results = catalogDto.value.target === 'VM' ? data?.results : data?.packages
+    registrySearchResults.value = (Array.isArray(results) ? results : []).filter(Boolean).slice(0, 8)
+    registrySearchPerformed.value = true
+  } catch (error) {
+    console.log(error)
+    registrySearchError.value = `Unable to search ${registryProviderName.value}.`
+  } finally {
+    registrySearchLoading.value = false
+  }
+}
+
+const selectRegistryPackage = async (result: any) => {
+  selectedRegistryPackage.value = result
+  catalogDto.value.packageName = result?.name || ''
+  catalogDto.value.version = ''
+  catalogDto.value.sourceType = catalogDto.value.target === 'VM' ? 'DOCKERHUB' : 'ARTIFACTHUB'
+  registryVersionList.value = []
+  registrySearchError.value = ''
+  importedRegistryKey.value = ''
+
+  const description = getRegistryDescription(result)
+  catalogDto.value.name = result?.name || catalogDto.value.name
+  catalogDto.value.summary = description || result?.name || ''
+  catalogDto.value.description = description || result?.name || ''
+  catalogDto.value.logoUrlLarge = result?.logo_url?.large || ''
+  catalogDto.value.logoUrlSmall = result?.logo_url?.small || ''
+
+  const recommendedCategory = normalizeCategoryValue(result?.category || result?.categories?.[0])
+  mergePublicCategories(recommendedCategory ? [recommendedCategory] : [])
+  catalogDto.value.category = recommendedCategory
+
+  const selectedKey = getRegistryResultKey(result)
+  registryVersionLoading.value = true
+  try {
+    const { data } = catalogDto.value.target === 'VM'
+      ? await getApplicationTagForDockerHub({ path: result?.id || '' })
+      : await getApplicationTagForArtifactHub({
+          kind: 'helm',
+          repository: result?.repository?.name || '',
+          packageName: result?.name || ''
+        })
+
+    if (getRegistryResultKey(selectedRegistryPackage.value) !== selectedKey) return
+
+    const versions = (Array.isArray(data) ? data : [])
+      .map((item: any) => catalogDto.value.target === 'VM' ? item?.name : item?.version)
+      .filter(Boolean)
+
+    if (versions.length === 0 && result?.version) versions.push(result.version)
+    registryVersionList.value = Array.from(new Set(versions)).map(value => ({ key: value, value }))
+    if (registryVersionList.value.length === 1) {
+      catalogDto.value.version = registryVersionList.value[0].value
+    }
+  } catch (error) {
+    console.log(error)
+    if (getRegistryResultKey(selectedRegistryPackage.value) !== selectedKey) return
+    if (result?.version) {
+      registryVersionList.value = [{ key: result.version, value: result.version }]
+      catalogDto.value.version = result.version
+    } else {
+      registrySearchError.value = 'Unable to retrieve package versions.'
+    }
+  } finally {
+    if (getRegistryResultKey(selectedRegistryPackage.value) === selectedKey) {
+      registryVersionLoading.value = false
+    }
+  }
+}
+
 const reset = () => {
   currentStep.value = 1
+  registrationSource.value = 'existing'
+  isSubmitting.value = false
+  resetRegistrySelection()
+  publicCategoryList.value = DEFAULT_CATEGORY_OPTIONS.map(value => ({ key: value, value }))
   catalogDto.value = {
     // 0. Common
     id: null,
@@ -587,8 +949,72 @@ const closeModal = () => {
   }
 }
 
-const create = async () => {
+const getRegistryImportKey = () => [
+  catalogDto.value.target,
+  getRegistryResultKey(selectedRegistryPackage.value),
+  catalogDto.value.version
+].join('|')
+
+const importSelectedRegistryPackage = async () => {
+  if (registrationSource.value !== 'public') return
+  if (!selectedRegistryPackage.value) throw new Error('Select a package to import.')
+
+  const importKey = getRegistryImportKey()
+  if (importedRegistryKey.value === importKey) return
+
+  registryImporting.value = true
   try {
+    const source = JSON.parse(JSON.stringify(selectedRegistryPackage.value))
+    let response
+
+    if (catalogDto.value.target === 'VM') {
+      const selectedCategory = catalogDto.value.category
+      const payload = {
+        ...source,
+        tag: catalogDto.value.version,
+        sourceType: 'DockerHub',
+        createdAt: source.created_at,
+        updatedAt: source.updated_at,
+        shortDescription: source.short_description,
+        starCount: source.star_count,
+        ratePlans: source.rate_plans,
+        categories: [{
+          name: selectedCategory,
+          slug: selectedCategory.toLowerCase().replace(/_/g, '-')
+        }]
+      }
+      delete payload.created_at
+      delete payload.updated_at
+      delete payload.short_description
+      delete payload.star_count
+      delete payload.rate_plans
+      response = await upLoadDockerHubApplication(payload)
+    } else {
+      response = await upLoadArtifactHubApplication({
+        ...source,
+        packageId: source.packageId,
+        tag: catalogDto.value.version,
+        version: catalogDto.value.version,
+        category: catalogDto.value.category,
+        sourceType: 'ArtifactHub'
+      })
+    }
+
+    if (response?.data?.success !== true) {
+      throw new Error(response?.data?.message || `${registryProviderName.value} import failed.`)
+    }
+    importedRegistryKey.value = importKey
+  } finally {
+    registryImporting.value = false
+  }
+}
+
+const create = async () => {
+  if (isSubmitting.value) return
+  isSubmitting.value = true
+  try {
+    await importSelectedRegistryPackage()
+
     // Reference 데이터 설정
     catalogDto.value.catalogRefs = refData.value.filter(ref => ref.refValue.trim())
     
@@ -611,12 +1037,17 @@ const create = async () => {
     closeModal()
     
     emit('created')
-  } catch (e) {
-    toast.error('Registration Failed')
+  } catch (e: any) {
+    console.log(e)
+    toast.error(e?.message || 'Registration Failed')
+  } finally {
+    isSubmitting.value = false
   }
 }
 
 const update = async () => {
+  if (isSubmitting.value) return
+  isSubmitting.value = true
   try {
     // Reference 데이터 설정
     catalogDto.value.catalogRefs = refData.value.filter(ref => ref.refValue.trim())
@@ -642,6 +1073,8 @@ const update = async () => {
     emit('updated')
   } catch (e) {
     toast.error('Update Failed')
+  } finally {
+    isSubmitting.value = false
   }
 }
 
@@ -747,21 +1180,48 @@ const loadCatalogData = async () => {
 }
 
 const onClickStep = (num: number) => {
-  if(canGoNext.value) {
+  if(!isSubmitting.value && canGoNext.value) {
     currentStep.value = num
   }
 }
 
-// target 값 변경 시 카테고리 목록 조회
-watch(() => catalogDto.value.target, (newTarget) => {
-  if (newTarget) {
-    // 초기화 중이 아닐 때만 하위 필드들을 초기화
-    if (props.mode === 'new') {
-      catalogDto.value.category = ''
-      catalogDto.value.packageName = ''
-      catalogDto.value.version = ''
-    }
-    _getCategoryList()
+watch(registrationSource, async () => {
+  if (props.mode !== 'new' || isInitializing.value) return
+
+  catalogDto.value.category = ''
+  catalogDto.value.packageName = ''
+  catalogDto.value.version = ''
+  catalogDto.value.name = ''
+  catalogDto.value.summary = ''
+  catalogDto.value.description = ''
+  catalogDto.value.logoUrlLarge = ''
+  catalogDto.value.logoUrlSmall = ''
+  resetRegistrySelection()
+
+  if (registrationSource.value === 'existing') {
+    await _getCategoryList()
+  } else {
+    catalogDto.value.sourceType = catalogDto.value.target === 'VM' ? 'DOCKERHUB' : 'ARTIFACTHUB'
+    await loadPublicCategories()
+  }
+})
+
+// target 값 변경 시 패키지 소스에 맞는 목록 초기화
+watch(() => catalogDto.value.target, async (newTarget, oldTarget) => {
+  if (!newTarget || isInitializing.value || newTarget === oldTarget) return
+
+  if (props.mode === 'new') {
+    catalogDto.value.category = ''
+    catalogDto.value.packageName = ''
+    catalogDto.value.version = ''
+  }
+
+  if (usesExistingPackage.value) {
+    await _getCategoryList()
+  } else {
+    catalogDto.value.sourceType = newTarget === 'VM' ? 'DOCKERHUB' : 'ARTIFACTHUB'
+    resetRegistrySelection()
+    await loadPublicCategories()
   }
 })
 
@@ -769,7 +1229,7 @@ const categoryList = ref([] as { key: string, value: string }[])
 const _getCategoryList = async () => {
   
   // 초기화 중이 아닐 때만 필드들을 초기화
-  if (props.mode === 'new') {
+  if (props.mode === 'new' && usesExistingPackage.value) {
     categoryList.value = []
     packageList.value = []
     versionList.value = [] 
@@ -790,7 +1250,7 @@ const _getCategoryList = async () => {
 
 // category 값 변경 시 패키지 목록 조회
 watch(() => catalogDto.value.category, (category) => {
-  if (category) {
+  if (category && usesExistingPackage.value && !isInitializing.value) {
     // 초기화 중이 아닐 때만 하위 필드들을 초기화
     if (props.mode === 'new') {
       catalogDto.value.packageName = ''
@@ -804,7 +1264,7 @@ const packageList = ref([] as { key: string, value: string }[])
 const _getPackageList = async () => {
   
   // 초기화 중이 아닐 때만 필드들을 초기화
-  if (props.mode === 'new') {
+  if (props.mode === 'new' && usesExistingPackage.value) {
     packageList.value = []
     versionList.value = []
     catalogDto.value.packageName = ''
@@ -821,7 +1281,7 @@ const _getPackageList = async () => {
 }
 
 watch(() => catalogDto.value.packageName, (packageName) => {
-  if (packageName) {
+  if (packageName && usesExistingPackage.value && !isInitializing.value) {
     // 초기화 중이 아닐 때만 version을 초기화
     if (props.mode === 'new') {
       catalogDto.value.version = ''
@@ -833,7 +1293,7 @@ watch(() => catalogDto.value.packageName, (packageName) => {
 const versionList = ref([] as any[])
 const _getVersionList = async () => {
   // 초기화 중이 아닐 때만 version을 초기화
-  if (props.mode === 'new') {
+  if (props.mode === 'new' && usesExistingPackage.value) {
     versionList.value = []
     catalogDto.value.version = ''
   }
@@ -884,6 +1344,43 @@ defineExpose({
 .nav-link {
   cursor: default;
 }
+
+.source-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: 92px;
+  padding: 1rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: var(--tblr-border-radius);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.source-option.selected {
+  border-color: var(--tblr-primary);
+  box-shadow: 0 0 0 1px var(--tblr-primary);
+}
+
+.source-option small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--tblr-secondary-color);
+}
+
+.registry-results {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.registry-logo {
+  flex: 0 0 auto;
+  object-fit: contain;
+  background: #fff;
+}
+
+.registry-description,
+.registry-results .list-group-item.active .registry-description {
+  color: var(--tblr-secondary-color) !important;
+}
 </style>
-
-

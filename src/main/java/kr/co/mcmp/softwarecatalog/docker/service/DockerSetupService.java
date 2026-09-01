@@ -1,280 +1,126 @@
 package kr.co.mcmp.softwarecatalog.docker.service;
 
-import org.springframework.stereotype.Service;
-import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
-import kr.co.mcmp.softwarecatalog.application.exception.ApplicationException;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
 
+import kr.co.mcmp.softwarecatalog.application.exception.ApplicationException;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
+import lombok.RequiredArgsConstructor;
+
+/**
+ * Prepares Docker on a VM through CB-Tumblebug SSH.
+ *
+ * The daemon is kept on its local Unix socket. This service never enables a
+ * TCP Docker API and explicitly removes the legacy 0.0.0.0:2375 systemd
+ * argument previously written by Application Manager.
+ */
 @Service
 @RequiredArgsConstructor
 public class DockerSetupService {
 
     private static final Logger log = LoggerFactory.getLogger(DockerSetupService.class);
 
-    private final CbtumblebugRestApi cbtumblebugRestApi;
+    private final DockerSshCommandExecutor commandExecutor;
 
     public void checkAndInstallDocker(String namespace, String mciId, String vmId) throws ApplicationException {
-        log.info("Checking Docker installation for namespace: {}, mciId: {}, vmId: {}", namespace, mciId, vmId);
-        String checkDockerCommand = "docker --version && ps aux | grep dockerd | grep -q -- '-H tcp://0.0.0.0:2375' && echo 'Remote API enabled' || echo 'Remote API not enabled'";
+        log.info("Checking local Docker runtime through SSH for namespace={}, mciId={}, vmId={}",
+                namespace, mciId, vmId);
         try {
-            String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, checkDockerCommand, null, vmId);
-            log.info("Docker check result: '{}'", result);
-            
-            boolean dockerInstalled = result != null && result.contains("Docker version");
-            boolean remoteApiEnabled = result != null && result.contains("Remote API enabled");
+            DockerTarget target = new DockerTarget(namespace, mciId, vmId);
+            String checkResult = execute(target,
+                    "if command -v docker >/dev/null 2>&1; then "
+                            + "docker --version; "
+                            + "else echo 'DOCKER_NOT_INSTALLED'; fi");
 
-            if (result == null || result.trim().isEmpty()) {
-                log.warn("Docker check command returned empty result. Assuming Docker needs to be installed...");
-                installAndConfigureDockerOnVM(namespace, mciId, vmId);
-            } else if (!dockerInstalled) {
-                log.warn("Docker is not installed or remote API is not enabled. Installing/configuring Docker...");
-                installAndConfigureDockerOnVM(namespace, mciId, vmId);
-            } else if (!remoteApiEnabled) {
-                log.warn("Docker is installed but remote API is not enabled. Configuring Docker remote access...");
-                configureInstalledDockerOnVM(namespace, mciId, vmId);
-            } else {
-                log.info("Docker is already installed and configured for remote access on VM: {}", vmId);
+            if (checkResult == null || checkResult.contains("DOCKER_NOT_INSTALLED")) {
+                installDocker(target);
             }
+
+            removeLegacyInsecureRemoteApi(target);
+            ensureDockerServiceRunning(target);
+            verifySecureDockerRuntime(target);
         } catch (Exception e) {
-            log.error("Error checking Docker installation", e);
-            throw new ApplicationException("Failed to check Docker installation: " + e.getMessage());
+            log.error("Failed to prepare Docker through SSH for VM {}", vmId, e);
+            throw new ApplicationException("Failed to prepare Docker through SSH: " + safeMessage(e));
         }
     }
 
-    private void installAndConfigureDockerOnVM(String namespace, String mciId, String vmId) throws ApplicationException {
-        log.info("Starting Docker installation and configuration for namespace: {}, mciId: {}, vmId: {}", namespace, mciId, vmId);
-        try {
-            // sudo 권한 확인
-            if (hasSudoAccess(namespace, mciId, vmId)) {
-                log.info("Sudo access available, proceeding with full installation");
-                installDocker(namespace, mciId, vmId);
-                configureDockerWithSystemd(namespace, mciId, vmId);
-            } else {
-                log.warn("Sudo access not available (Azure VM), trying limited installation");
-                installDockerLimited(namespace, mciId, vmId);
-            }
-            verifyDockerConfiguration(namespace, mciId, vmId);
-        } catch (Exception e) {
-            log.error("Error installing or configuring Docker", e);
-            throw new ApplicationException("Failed to install or configure Docker: " + e.getMessage());
+    private void installDocker(DockerTarget target) {
+        String sudoCheck = execute(target,
+                "sudo -n true >/dev/null 2>&1 && echo SUDO_OK || echo SUDO_REQUIRED");
+        if (sudoCheck == null || !sudoCheck.contains("SUDO_OK")) {
+            throw new IllegalStateException("Docker is not installed and passwordless sudo is unavailable");
+        }
+
+        String installCommand = "mcmp_installer=$(mktemp) && "
+                + "curl -fsSL https://get.docker.com -o \"$mcmp_installer\" && "
+                + "sudo sh \"$mcmp_installer\" && "
+                + "rm -f \"$mcmp_installer\" && "
+                + "sudo usermod -aG docker \"$(id -un)\" && "
+                + "sudo systemctl enable --now docker && "
+                + "echo DOCKER_INSTALLED";
+        String result = execute(target, installCommand);
+        if (result == null || !result.contains("DOCKER_INSTALLED")) {
+            throw new IllegalStateException("Docker installation did not complete successfully");
+        }
+        log.info("Docker installed on VM {} without enabling a TCP API", target.vmId());
+    }
+
+    private void removeLegacyInsecureRemoteApi(DockerTarget target) {
+        String command = "mcmp_override=/etc/systemd/system/docker.service.d/override.conf; "
+                + "if sudo test -f \"$mcmp_override\" "
+                + "&& sudo grep -q 'tcp://0.0.0.0:2375' \"$mcmp_override\"; then "
+                + "sudo sed -i "
+                + "-e 's@[[:space:]]*-H[[:space:]]*tcp://0\\.0\\.0\\.0:2375@@g' "
+                + "-e 's@[[:space:]]*--host=tcp://0\\.0\\.0\\.0:2375@@g' "
+                + "\"$mcmp_override\" && "
+                + "sudo systemctl daemon-reload && sudo systemctl restart docker && "
+                + "echo LEGACY_2375_REMOVED; "
+                + "else echo NO_LEGACY_2375_OVERRIDE; fi";
+        String result = execute(target, command);
+        if (result != null && result.contains("LEGACY_2375_REMOVED")) {
+            log.warn("Removed legacy Docker 2375 systemd override from VM {}", target.vmId());
         }
     }
 
-    private void configureInstalledDockerOnVM(String namespace, String mciId, String vmId) throws ApplicationException {
-        log.info("Starting Docker remote API configuration for namespace: {}, mciId: {}, vmId: {}", namespace, mciId, vmId);
-        try {
-            if (hasSudoAccess(namespace, mciId, vmId)) {
-                log.info("Sudo access available, configuring installed Docker through systemd");
-                configureDockerWithSystemd(namespace, mciId, vmId);
-            } else {
-                log.warn("Sudo access not available (Azure VM), trying limited Docker remote API configuration");
-                installDockerLimited(namespace, mciId, vmId);
-            }
-            verifyDockerConfiguration(namespace, mciId, vmId);
-        } catch (Exception e) {
-            log.error("Error configuring Docker remote access", e);
-            throw new ApplicationException("Failed to configure Docker remote access: " + e.getMessage());
+    private void ensureDockerServiceRunning(DockerTarget target) {
+        String command = "if docker info >/dev/null 2>&1; then echo DOCKER_READY; "
+                + "elif sudo -n systemctl enable --now docker >/dev/null 2>&1 "
+                + "&& docker info >/dev/null 2>&1; then echo DOCKER_READY; "
+                + "else echo DOCKER_NOT_READY; fi";
+        String result = execute(target, command);
+        if (result == null || !result.contains("DOCKER_READY") || result.contains("DOCKER_NOT_READY")) {
+            throw new IllegalStateException(
+                    "Docker daemon is not accessible to the Tumblebug SSH user: " + result);
         }
     }
 
-    private void configureDockerWithSystemd(String namespace, String mciId, String vmId) throws Exception {
-        ensureDockerSystemdServiceAvailable(namespace, mciId, vmId);
-        configureDockerForRemoteAccess(namespace, mciId, vmId);
-        setDockerPermissions(namespace, mciId, vmId);
-        enableBridgeNfCallIptables(namespace, mciId, vmId);
-        configureVmMaxMapCount(namespace, mciId, vmId);
-        configureSSHForDockerAccess(namespace, mciId, vmId);
-        restartDocker(namespace, mciId, vmId);
-    }
-    
-    /**
-     * sudo 권한이 있는지 확인합니다.
-     */
-    private boolean hasSudoAccess(String namespace, String mciId, String vmId) throws Exception {
-        String checkSudoCommand = "sudo -n true 2>/dev/null && echo 'SUDO_OK' || echo 'SUDO_FAIL'";
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, checkSudoCommand, null, vmId);
-        return result != null && result.contains("SUDO_OK");
-    }
-    
-    /**
-     * Azure VM 등 sudo 권한이 없는 경우의 제한된 설치
-     */
-    private void installDockerLimited(String namespace, String mciId, String vmId) throws Exception {
-        // Docker가 이미 설치되어 있는지 확인
-        String checkDockerCommand = "which docker && docker --version";
-        String checkResult = cbtumblebugRestApi.executeMciCommand(namespace, mciId, checkDockerCommand, null, vmId);
-        
-        if (checkResult != null && checkResult.contains("Docker version")) {
-            log.info("Docker is already installed: {}", checkResult);
-            // Docker 데몬 시작 시도
-            startDockerDaemon(namespace, mciId, vmId);
-            // Azure VM에서도 vm.max_map_count 설정 시도 (실패해도 계속 진행)
-            try {
-                configureVmMaxMapCount(namespace, mciId, vmId);
-            } catch (Exception e) {
-                log.warn("Failed to configure vm.max_map_count on Azure VM (expected): {}", e.getMessage());
-            }
-        } else {
-            log.warn("Docker is not installed and sudo access is not available on VM: {}", vmId);
-            log.warn("Please install Docker manually or contact your system administrator");
+    private void verifySecureDockerRuntime(DockerTarget target) {
+        String command = "docker info --format '{{json .ServerVersion}}' >/dev/null 2>&1 "
+                + "|| { echo DOCKER_INFO_FAILED; exit 1; }; "
+                + "if ! command -v ss >/dev/null 2>&1; then "
+                + "echo PORT_CHECK_UNAVAILABLE; "
+                + "elif ss -lntH | awk '{print $4}' | grep -Eq '(^|:)2375$'; then "
+                + "echo INSECURE_2375_LISTENER; else echo SECURE_DOCKER_READY; fi";
+        String result = execute(target, command);
+        if (result != null && result.contains("PORT_CHECK_UNAVAILABLE")) {
+            throw new IllegalStateException(
+                    "Cannot verify that Docker port 2375 is closed because the ss command is unavailable");
         }
-    }
-    
-    /**
-     * 사용자 권한으로 Docker 데몬 시작
-     */
-    private void startDockerDaemon(String namespace, String mciId, String vmId) throws Exception {
-        log.info("Attempting to start Docker daemon with user permissions...");
-        
-        // Docker 데몬이 이미 실행 중인지 확인
-        String checkRunningCommand = "curl -s http://localhost:2375/version 2>/dev/null && echo 'DOCKER_RUNNING' || echo 'DOCKER_NOT_RUNNING'";
-        String checkResult = cbtumblebugRestApi.executeMciCommand(namespace, mciId, checkRunningCommand, null, vmId);
-        
-        if (checkResult != null && checkResult.contains("DOCKER_RUNNING")) {
-            log.info("Docker daemon is already running on VM: {}", vmId);
-            return;
+        if (result == null || !result.contains("SECURE_DOCKER_READY")
+                || result.contains("INSECURE_2375_LISTENER")) {
+            throw new IllegalStateException(
+                    "Docker must use only its local Unix socket; TCP port 2375 is still active: " + result);
         }
-        
-        // 사용자 권한으로 Docker 데몬 시작
-        String startDaemonCommand = 
-            "mkdir -p /tmp/docker-data && " +
-            "nohup dockerd --host=unix:///tmp/docker.sock --host=tcp://0.0.0.0:2375 --data-root=/tmp/docker-data > /tmp/docker.log 2>&1 & " +
-            "sleep 5 && " +
-            "curl -s http://localhost:2375/version 2>/dev/null && echo 'DOCKER_STARTED' || echo 'DOCKER_FAILED'";
-        
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, startDaemonCommand, null, vmId);
-        log.info("Docker daemon start result: {}", result);
-        
-        if (result != null && result.contains("DOCKER_STARTED")) {
-            log.info("Docker daemon successfully started on VM: {}", vmId);
-        } else {
-            log.warn("Docker daemon start failed. Check logs: tail -20 /tmp/docker.log");
-        }
+        log.info("Verified Docker Unix-socket access and no 2375 listener on VM {}", target.vmId());
     }
 
-    
-    private void installDocker(String namespace, String mciId, String vmId) throws Exception {
-        String installDockerCommand = 
-            "curl -fsSL https://get.docker.com -o get-docker.sh && " +
-            "sudo sh get-docker.sh && " +
-            "sudo usermod -aG docker $USER && " +
-            "sudo systemctl enable docker";
-        
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, installDockerCommand, null, vmId);
-        log.info("Docker installation result: {}", result);
+    private String execute(DockerTarget target, String command) {
+        return commandExecutor.execute(target, command).stdout();
     }
 
-    private void ensureDockerSystemdServiceAvailable(String namespace, String mciId, String vmId) throws Exception {
-        String serviceCheckCommand =
-            "(systemctl cat docker.service >/dev/null 2>&1) && echo 'DOCKER_SERVICE_FOUND' || echo 'DOCKER_SERVICE_NOT_FOUND'";
-
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, serviceCheckCommand, null, vmId);
-        log.info("Docker systemd service check result: {}", result);
-
-        requireCommandSuccess(
-            result,
-            "DOCKER_SERVICE_FOUND",
-            "DOCKER_SERVICE_NOT_FOUND",
-            "Docker systemd service is not available. Docker remote API configuration requires docker.service");
-    }
-
-    private void configureDockerForRemoteAccess(String namespace, String mciId, String vmId) throws Exception {
-        String configureDockerCommand = 
-            "(sudo mkdir -p /etc/systemd/system/docker.service.d && " +
-            "printf '%s\\n' '[Service]' 'ExecStart=' 'ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock' | sudo tee /etc/systemd/system/docker.service.d/override.conf >/dev/null && " +
-            "sudo systemctl daemon-reload) 2>&1 && echo 'DOCKER_REMOTE_CONFIGURED' || echo 'DOCKER_REMOTE_CONFIG_FAILED'";
-        
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, configureDockerCommand, null, vmId);
-        log.info("Docker remote access configuration result: {}", result);
-
-        requireCommandSuccess(
-            result,
-            "DOCKER_REMOTE_CONFIGURED",
-            "DOCKER_REMOTE_CONFIG_FAILED",
-            "Failed to configure Docker remote API through systemd override");
-    }
-
-    private void configureSSHForDockerAccess(String namespace, String mciId, String vmId) throws Exception {
-        String configureSSHCommand = 
-            "sudo sed -i 's/^#*PubkeyAcceptedAlgorithms.*/PubkeyAcceptedAlgorithms=+ssh-rsa/' /etc/ssh/sshd_config && " +
-            "sudo systemctl restart sshd";
-        
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, configureSSHCommand, null, vmId);
-        log.info("SSH configuration for Docker access result: {}", result);
-    }
-
-    private void setDockerPermissions(String namespace, String mciId, String vmId) throws Exception {
-        String setPermissionsCommand = "sudo chmod 666 /var/run/docker.sock";
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, setPermissionsCommand, null, vmId);
-        log.info("Docker permissions setting result: {}", result);
-    }
-
-    private void enableBridgeNfCallIptables(String namespace, String mciId, String vmId) throws Exception {
-        String command = 
-            "echo 'net.bridge.bridge-nf-call-iptables = 1' | sudo tee -a /etc/sysctl.conf && " +
-            "echo 'net.bridge.bridge-nf-call-ip6tables = 1' | sudo tee -a /etc/sysctl.conf && " +
-            "sudo sysctl -p";
-        
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, command, null, vmId);
-        log.info("Bridge-nf-call-iptables configuration result: {}", result);
-    }
-
-    /**
-     * Elasticsearch를 위한 vm.max_map_count 설정
-     */
-    private void configureVmMaxMapCount(String namespace, String mciId, String vmId) throws Exception {
-        String command = 
-            "echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf && " +
-            "sudo sysctl -w vm.max_map_count=262144";
-        
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, command, null, vmId);
-        log.info("vm.max_map_count configuration result: {}", result);
-    }
-
-    private void restartDocker(String namespace, String mciId, String vmId) throws Exception {
-        String restartCommand = "(sudo systemctl restart docker) 2>&1 && echo 'DOCKER_RESTARTED' || echo 'DOCKER_RESTART_FAILED'";
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, restartCommand, null, vmId);
-        log.info("Docker restart result: {}", result);
-
-        requireCommandSuccess(
-            result,
-            "DOCKER_RESTARTED",
-            "DOCKER_RESTART_FAILED",
-            "Failed to restart Docker service after remote API configuration");
-    }
-
-    private void verifyDockerConfiguration(String namespace, String mciId, String vmId) throws Exception {
-        String verifyCommand = "ps aux | grep dockerd | grep -q -- '-H tcp://0.0.0.0:2375' && echo 'Remote API enabled' || echo 'Remote API not enabled'";
-        String result = cbtumblebugRestApi.executeMciCommand(namespace, mciId, verifyCommand, null, vmId);
-        
-        log.info("Docker verification result: '{}'", result);
-        
-        if (result == null || result.trim().isEmpty()) {
-            log.warn("Docker verification command returned empty result. This might indicate the command didn't execute properly.");
-            // 빈 결과인 경우에도 Docker가 실행 중인지 확인해보자
-            String alternativeCommand = "systemctl is-active docker && echo 'Docker service is active' || echo 'Docker service is not active'";
-            String alternativeResult = cbtumblebugRestApi.executeMciCommand(namespace, mciId, alternativeCommand, null, vmId);
-            log.info("Alternative Docker check result: '{}'", alternativeResult);
-            
-            if (!alternativeResult.contains("Docker service is active")) {
-                throw new ApplicationException("Failed to verify Docker configuration - Docker service is not active");
-            }
-        } else if (!result.contains("Remote API enabled")) {
-            log.warn("Docker remote API is not enabled. Result: '{}'", result);
-            throw new ApplicationException("Failed to configure Docker for remote access. Result: " + result);
-        }
-        
-        log.info("Docker configuration verified successfully");
-    }
-
-    private void requireCommandSuccess(String result, String successMarker, String failureMarker, String message) {
-        String commandResult = result == null ? "" : result;
-        if (commandResult.contains(successMarker) && !commandResult.contains(failureMarker)) {
-            return;
-        }
-
-        throw new ApplicationException(message + ". Result: " + commandResult);
+    private String safeMessage(Exception exception) {
+        return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
     }
 }

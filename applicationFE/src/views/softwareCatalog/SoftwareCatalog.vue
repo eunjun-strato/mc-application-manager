@@ -10,15 +10,22 @@
             <div class="col d-flex">
               <h2 class="page-title">Software Catalog</h2>
             </div>
-            <!-- Install Button relocated into header -->
+            <!-- Catalog management actions -->
             <div class="col-auto ms-auto">
-              <button 
-                class="btn btn-outline-primary d-none d-sm-inline-block" 
-                data-bs-toggle='modal' 
-                data-bs-target='#install-form'
-                @click="onClickDeploy('Application Installation')">
-                DEPLOY
-              </button>
+              <div class="btn-list">
+                <button
+                  type="button"
+                  class="btn btn-outline-primary"
+                  @click="onClickRegister">
+                  Register
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  @click="onClickDeploy('Application Installation')">
+                  Deploy
+                </button>
+              </div>
             </div>
             <!-- New Button -->
             <!-- 
@@ -91,14 +98,14 @@
                     <!-- Catalog -->
                     <div class="tab-pane active show" id="tabs-catalog">
                       <div>
-                        <SoftwareCatalogList :nsId="nsId"/>
+                        <SoftwareCatalogList ref="softwareCatalogListRef" :nsId="nsId"/>
                       </div>
                     </div>
 
                     <!-- Status -->
                     <div class="tab-pane" id="tabs-status">
                       <div>
-                        <ApplicationStatusList ref="applicationStatusListRef" />
+                        <ApplicationStatusList ref="applicationStatusListRef" :ns-id="nsId" />
                       </div>
                     </div>
 
@@ -140,36 +147,41 @@ import ApplicationStatusList from '@/views/softwareCatalog/components/applicatio
 import SoftwareCatalogList from '@/views/softwareCatalog/components/softwareCatalogList.vue';
 import RepositoryList from '@/views/repository/RepositoryList.vue';
 import RepositoryDetail from '@/views/repository/RepositoryDetail.vue';
+import { Modal } from 'bootstrap';
 
 // ETC
-import { nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { useUserStore } from '@/stores/user'
 
-// @ts-ignore
-import _ from 'lodash';
-
 const userinfo = useUserStore();
-const nsId = ref("" as string)
+const nsId = computed(() => userinfo.getNsId() || '')
 const modalTite = ref("" as string)
 const showRepositoryDetail = ref(false)
 const selectedRepositoryName = ref("")
 const applicationStatusListRef = ref<InstanceType<typeof ApplicationStatusList> | null>(null)
+const softwareCatalogListRef = ref<InstanceType<typeof SoftwareCatalogList> | null>(null)
 
-/**
-* @Title Life Cycle
-* @Desc 컬럼 set Callback 함수 호출
-*/
-onMounted(async () => {
-  nsId.value = userinfo.getNsId();
-})
-
+const openModal = (modalId: string) => {
+  const modalElement = document.getElementById(modalId)
+  if (modalElement) {
+    Modal.getOrCreateInstance(modalElement).show()
+  }
+}
 
 /**
 * @Method onClickDeploy
 * @Desc If when you Application Install or Uninstall Action
 */
-const onClickDeploy = (value: string) => {
+const onClickDeploy = async (value: string) => {
   modalTite.value = value
+  await nextTick()
+  openModal('install-form')
+}
+
+const onClickRegister = async () => {
+  softwareCatalogListRef.value?.startRegistration()
+  await nextTick()
+  openModal('modal-wizard')
 }
 
 const onClickStatusTab = async () => {

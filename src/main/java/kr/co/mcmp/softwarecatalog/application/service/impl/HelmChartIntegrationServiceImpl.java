@@ -446,7 +446,7 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
             }
             helmChart.setImageRepository(imageRepository);
             
-            // Repository 정보 설정 - 항상 Nexus 정보 사용
+            // 요청에 포함된 Repository 메타데이터 설정
             if (request.getRepository() != null) {
                 helmChart.setRepositoryDisplayName(request.getRepository().getName() != null ? 
                     request.getRepository().getName().toUpperCase() : "NEXUS-HELM");
@@ -460,7 +460,7 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
                 helmChart.setRepositoryOfficial(false);
             }
             
-            // Repository URL은 항상 Nexus URL로 설정
+            // 정확한 Chart가 Nexus에 있으면 Nexus, 없으면 요청의 외부 Repository URL 사용
             String chartRepositoryUrl = resolveChartRepositoryUrl(request);
             helmChart.setChartRepositoryUrl(chartRepositoryUrl);
             log.info("Set Helm chart repository URL: {}", chartRepositoryUrl);
@@ -487,9 +487,9 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
      * 기본 HelmChart 엔티티를 생성합니다.
      */
     private HelmChart createBaseHelmChart(HelmChartRegistrationRequest request, User user) {
-        // Repository URL 설정 - 항상 Nexus Helm Repository URL 사용
+        // 정확한 Chart 존재 여부에 따라 Nexus 또는 외부 Repository URL 선택
         String repositoryUrl = resolveChartRepositoryUrl(request);
-        log.info("Using Nexus repository URL: {}", repositoryUrl);
+        log.info("Resolved Helm Chart repository URL: {}", repositoryUrl);
 
         // imageRepository 설정 - 외부 경로를 내부 Nexus 경로로 변환
         String imageRepository = request.getImageRepository();
@@ -508,7 +508,7 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
                 .chartVersion(request.getVersion())
                 .tag(request.getTag())
                 .appVersion(request.getAppVersion())
-                .chartRepositoryUrl(repositoryUrl) // 요청에서 받은 repository URL 사용
+                .chartRepositoryUrl(repositoryUrl)
                 .category(request.getCategory())
                 .imageRepository(imageRepository)
                 .user(user)
@@ -636,10 +636,24 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
 
     private String resolveChartRepositoryUrl(HelmChartRegistrationRequest request) {
         try {
-            String nexusRepositoryUrl = getNexusRepositoryUrl();
-            if (!isBlank(nexusRepositoryUrl)) {
+            String helmRepositoryName = nexusIntegrationService.getRepositoryNameByFormat("helm");
+            String chartVersion = firstNonBlank(request.getVersion(), request.getTag());
+            boolean chartExistsInNexus = nexusIntegrationService.checkHelmChartExistsInNexus(
+                    helmRepositoryName,
+                    request.getName(),
+                    chartVersion);
+
+            if (chartExistsInNexus) {
+                OssDto nexusInfo = nexusIntegrationService.getNexusInfoFromDB();
+                String nexusRepositoryUrl = nexusInfo.getOssUrl() + "/repository/" + helmRepositoryName;
+                log.info("Using Nexus Helm repository because the exact Chart exists: repository={}, chart={}, version={}",
+                        helmRepositoryName, request.getName(), chartVersion);
                 return nexusRepositoryUrl;
             }
+
+            log.warn("Exact Helm Chart is not available in Nexus. Falling back to requested repository URL: "
+                            + "repository={}, chart={}, version={}",
+                    helmRepositoryName, request.getName(), chartVersion);
         } catch (Exception e) {
             log.warn("Nexus Helm repository is not available. Falling back to requested repository URL: {}", e.getMessage());
         }
@@ -977,33 +991,17 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
                 return false;
             }
 
-            // 업로드 후 간단 검증: 검색 API로 존재여부 확인
-            try {
-                String helmRepositoryNameVerify = nexusIntegrationService.getRepositoryNameByFormat("helm");
-                String verifyUrl = nexusInfo.getOssUrl() + "/service/rest/v1/search?repository=" + helmRepositoryNameVerify + "&name=" + request.getName();
-                ProcessBuilder verifyPb = new ProcessBuilder("curl", "-sS", "-u",
-                        nexusInfo.getOssUsername() + ":" + kr.co.mcmp.util.Base64Utils.base64Decoding(nexusInfo.getOssPassword()),
-                        verifyUrl);
-                Process verifyProc = verifyPb.start();
-                String verifyOut = new String(verifyProc.getInputStream().readAllBytes());
-                verifyProc.waitFor();
-                if (verifyOut == null || verifyOut.trim().isEmpty() || !verifyOut.contains(request.getName())) {
-                    log.warn("Helm Chart not visible in Nexus search yet. It may require index rebuild.");
-                } else {
-                    log.info("Helm Chart appears in Nexus search results.");
-                }
-            } catch (Exception ve) {
-                log.warn("Failed to verify Helm Chart in Nexus search: {}", ve.getMessage());
+            String chartVersion = firstNonBlank(request.getVersion(), request.getTag());
+            if (!nexusIntegrationService.checkHelmChartExistsInNexus(
+                    helmRepositoryName, request.getName(), chartVersion)) {
+                log.error("Uploaded Helm Chart could not be verified in Nexus: repository={}, chart={}, version={}",
+                        helmRepositoryName, request.getName(), chartVersion);
+                deleteTemporaryChartFile(chartFile, chartFileName);
+                return false;
             }
 
             // 임시 파일 삭제
-            try {
-                if (chartFile.delete()) {
-                    log.info("Temporary Helm Chart file deleted: {}", chartFileName);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to delete temporary Helm Chart file: {}", chartFileName);
-            }
+            deleteTemporaryChartFile(chartFile, chartFileName);
 
             log.info("Successfully uploaded Helm Chart to Nexus: {}:{}", request.getName(), request.getVersion());
             return true;
@@ -1011,6 +1009,16 @@ public class HelmChartIntegrationServiceImpl implements HelmChartIntegrationServ
         } catch (Exception e) {
             log.error("Error uploading Helm Chart to Nexus: {}:{}", request.getName(), request.getVersion(), e);
             return false;
+        }
+    }
+
+    private void deleteTemporaryChartFile(java.io.File chartFile, String chartFileName) {
+        try {
+            if (chartFile.delete()) {
+                log.info("Temporary Helm Chart file deleted: {}", chartFileName);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to delete temporary Helm Chart file: {}", chartFileName);
         }
     }
 }

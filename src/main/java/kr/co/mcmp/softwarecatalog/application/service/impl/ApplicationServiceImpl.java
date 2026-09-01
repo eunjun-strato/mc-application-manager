@@ -416,6 +416,12 @@ public class ApplicationServiceImpl implements ApplicationService {
         return applicationStatusRepository.findAll();
     }
 
+    @Override
+    public List<ApplicationStatus> getAllApplicationStatus(String namespace) {
+        log.info("Getting application status for namespace");
+        return applicationStatusRepository.findByNamespace(namespace);
+    }
+
     /**
      * 특정 애플리케이션 상태의 에러 로그를 조회합니다.
      */

@@ -54,6 +54,14 @@ public interface ApplicationOrchestrationService {
      * @return 애플리케이션 상태 목록
      */
     List<ApplicationStatusDto> getApplicationGroups();
+
+    /**
+     * 특정 CB-Tumblebug namespace에 속한 애플리케이션 상태만 조회합니다.
+     *
+     * @param namespace CB-Tumblebug namespace ID
+     * @return namespace로 제한된 애플리케이션 상태 목록
+     */
+    List<ApplicationStatusDto> getApplicationGroups(String namespace);
     
     /**
      * 배포 이력을 조회합니다.
@@ -90,6 +98,8 @@ public interface ApplicationOrchestrationService {
      * @return 애플리케이션 상태
      */
     ApplicationStatusDto getLatestApplicationStatus(String username);
+
+    ApplicationStatusDto getLatestApplicationStatus(String username, String namespace);
     
     /**
      * VM 스펙을 검증합니다.
@@ -131,4 +141,3 @@ public interface ApplicationOrchestrationService {
      */
     K8sSpec getSpecForK8s(String namespace, String clusterName);
 }
-

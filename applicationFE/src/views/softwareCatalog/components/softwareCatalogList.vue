@@ -1,19 +1,9 @@
 <template>
   <div ref="sofwareCatalog">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h2 class="mb-0">Catalog</h2>
-      <button 
-        class="btn btn-outline-primary d-none d-sm-inline-block" 
-        style="margin-right: 315px;" 
-        data-bs-toggle="modal" 
-        data-bs-target="#modal-wizard"
-        @click="onClickRegist">
-        Regist
-      </button>
-    </div>
+    <h2 class="mb-3">Catalog</h2>
     <!-- Navbar -->
     <div class="row">
-      <div class="col-lg-9">
+      <div class="col-lg-12">
         <div class="card">
           <div class="list-group card-list-group" id="sc-list-group">
             <div 
@@ -247,111 +237,6 @@
         </div>
       </div>
 
-      <!-- Search Area -->
-      <div class="col-lg-3">
-        <div class="input-icon mb-3">
-          <span class="input-icon-addon">
-            <IconSearch class="icon" width="24" height="24" stroke-width="2" />
-          </span>
-          <input 
-            type="text" 
-            class="form-control" 
-            placeholder="Search…" 
-            @keypress="searchCatalog"
-            v-model="searchKeyword" 
-            id="inputCatalogSearch">
-        </div>
-        
-        <!-- docker hub Search -->
-        <h3 class="mb-3">
-         DOCKERHUB
-        </h3>
-        <div 
-          v-if="dockerHubSearchList.length <= 0"
-          class="col-md-6 col-lg-12" 
-          id="resultDockerHubEmpty">
-          There are no related Container Images found.
-        </div>
-
-        <div v-if="dockerHubSearchList.length > 0" class="row row-cards" id="resultDockerHubSearch">
-          <div 
-            v-for="(result, idx) in dockerHubSearchList" 
-            class="col-md-6 col-lg-12" 
-            :key="idx">
-            <div class="card">
-              <div class="row row-0">
-                <div class="col-auto">
-                  <img 
-                    :src="result.logo_url.large" 
-                    class="rounded-start ms-2" 
-                    alt="Shape of You" 
-                    width="80"
-                    height="80">
-                </div>
-                <div class="col">
-                  <div class="card-body">
-                    <a :href="'https://hub.docker.com/search?q=' + searchKeyword" target="_blank">
-                      {{result?.name}}
-                    </a>
-                    <div class="text-muted">
-                      {{ result?.short_description.length > 30 ? result?.short_description.substring(0, 30) + "..." : ""}}
-                    </div>
-                  </div>
-                </div>
-                <div class="col-auto lh-1">
-                  <div class="d-flex justify-content-end me-2 mt-4 mouse-hover">
-                    <IconDownload class="cursor-pointer" size="20" stroke-width="2" @click="onClickUpload(result, 'DockerHub')" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="mt-5">
-          <h3 class="mb-3">
-            ARTIFACTHUB 
-          </h3>
-          <div 
-            v-if="artifactHubSearchList.length <= 0"
-            class="col-md-6 col-lg-12" 
-            id="resultArtifactHubEmpty">
-            There are no related Helm Charts found.
-          </div>
-
-          <div 
-            v-if="artifactHubSearchList.length > 0"
-            class="row row-cards" 
-            id="resultArtifactHubSearch">
-            <div 
-              v-for="(result, idx) in artifactHubSearchList" 
-              class="col-md-6 col-lg-12" 
-              :key="idx">
-              <div class="card">
-                <div class="row row-0">
-                  <div class="col-auto">
-                    <img src="https://artifacthub.io/static/media/placeholder_pkg_helm.png" class="rounded-start" alt="Shape of You" width="80" height="80">
-                  </div>
-                  <div class="col">
-                    <div class="card-body">
-                      <a :href="'https://artifacthub.io/packages/search?ts_query_web=' + searchKeyword + '&sort=relevance&page=1'" target="_blank">
-                        {{result?.name}}
-                      </a>
-                      <div class="text-muted">
-                        {{result?.description.length > 30 ? result?.description.substring(0, 30) + "..." : ""}}
-                      </div>
-                    </div>
-                  </div>
-                  <div class="col-auto lh-1">
-                    <div class="d-flex justify-content-end me-2 mt-4 mouse-hover">
-                      <IconDownload class="cursor-pointer" size="20" stroke-width="2" @click="onClickUpload(result, 'ArtifactHub')" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
   
@@ -367,12 +252,6 @@
     @created="_getSoftwareCatalogList"
     @updated="_getSoftwareCatalogList" />
     
-  <UploadForm 
-    ref="uploadFormModal"
-    :source-data="uploadData"
-    @uploaded="onUploaded"
-    @close="onUploadModalClose" />
-
   <ApplicationDetailModal
     ref="applicationDetailModalRef"
     :deployment-id="selectedDeploymentId" />
@@ -386,27 +265,22 @@
 </template>
 <script setup lang="ts">
 // Component
-import { IconDots, IconDownload, IconEdit, IconRowRemove, IconSearch, IconTrash, IconUpload, IconStar, IconCloud, IconCloudFilled, IconStarFilled, IconCloudDown, IconCloudDownload, IconPackage, IconRefresh } from '@tabler/icons-vue'
-// @ts-ignore
-import SoftwareCatalogForm from './softwareCatalogForm.vue';
-// @ts-ignore
+import { IconEdit, IconTrash, IconStarFilled, IconCloudDownload, IconPackage, IconRefresh } from '@tabler/icons-vue'
 import SoftwareCatalogWizard from './softwareCatalogWizard.vue';
 // @ts-ignore
 import DeleteConfirmModal from './DeleteConfirmModal.vue';
 // @ts-ignore
-import UploadForm from './uploadForm.vue';
-// @ts-ignore
 import ApplicationDetailModal from './applicationDetailModal.vue';
 
 // API
-import { getSoftwareCatalogList, searchArtifacthubhub, searchDockerhub, upLoadDockerHubApplication, upLoadArtifactHubApplication, getCatalogDeploymentStatus } from '../../../api/softwareCatalog';
+import { getSoftwareCatalogList, getCatalogDeploymentStatus } from '../../../api/softwareCatalog';
 import {
   getApplicationStatusBadgeClass,
   getApplicationStatusLabel
 } from '../applicationStatusDisplay'
 
 // ETC
-import { computed, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import type { SoftwareCatalog } from '../../type/type';
 import { useToast } from 'vue-toastification';
 // @ts-ignore
@@ -428,52 +302,21 @@ const repositoryName = ref("" as string)
 const deleteTargetCatalog = ref({} as any)
 const deleteConfirmModal = ref<any>(null)
 
-// 업로드 관련 상태
-const uploadFormModal = ref<any>(null)
-const uploadData = ref({} as any)
-
 // 위저드 모달 관련 상태
 const wizardModal = ref<any>(null)
 
-const searchKeyword = ref("")
-const dockerHubSearchList = ref([] as any)
-const artifactHubSearchList = ref([] as any)
 const selectedDeploymentId = ref(0 as number)
 const applicationDetailModalRef = ref<any>(null)
 
-// Dropdown 제어를 위한 상태
-const activeDropdown = ref("")
-
-/**
- * @Title Dropdown 제어
- * @Desc dropdown을 토글하는 메서드
- */
-const toggleDropdown = (dropdownId: string) => {
-  if (activeDropdown.value === dropdownId) {
-    activeDropdown.value = ""
-  } else {
-    activeDropdown.value = dropdownId
-  }
-}
-
 /**
  * @Title Life Cycle
- * @Desc SearchKeyword 변수 초기화 / catalogList set Method call
+ * @Desc catalogList set Method call
  */
 onMounted(async () => {
-  searchKeyword.value = ""
   _getSoftwareCatalogList()
-  
-  // 클릭 이벤트 리스너 추가 (dropdown 외부 클릭 시 닫기)
-  document.addEventListener('click', (e) => {
-    const target = e.target as HTMLElement
-    if (!target.closest('.dropdown')) {
-      activeDropdown.value = ""
-    }
-  })
 })
 
-const onClickRegist = () => {
+const startRegistration = () => {
   wizardMode.value = 'new'
   selectCatalogId.value = null
   selectCatalogInfo.value = {}
@@ -489,13 +332,17 @@ const onClickRegist = () => {
   }, 100)
 }
 
+defineExpose({
+  startRegistration
+})
+
 /**
 * @Method _getSoftwareCatalogList
 * @Desc software catalog List get Method Call / set Data
 */
 const _getSoftwareCatalogList = async () => {
   try {
-    await getSoftwareCatalogList(searchKeyword.value).then(({ data }) => {
+    await getSoftwareCatalogList("").then(({ data }) => {
       _.forEach(data, function(item: any) {
         item.refData = groupedData(item.catalogRefs)
         item.isShow = false;
@@ -521,71 +368,6 @@ const groupedData = (catalogRefs: any) => {
     acc[item.refType].push(item);
     return acc;
   }, {});
-}
-
-/**
-* @Method searchCatalog
-* @Desc public repository(dockerHub / artifactHub) API Call / data set
-*/
-const searchCatalog = async (e: { keyCode: number; }) => {
-  // trigger :: press enter key
-  if(e.keyCode == 13){
-    const keyword = searchKeyword.value.trim()
-    if (!keyword) return
-    searchKeyword.value = keyword
-    await setDockerHubSearchList();
-    await setArtifactHubSearchList();
-  }
-}
-
-/**
-* @Method setDockerHubSearchList
-* @Desc dockerHub API Call / data set
-*/
-const setDockerHubSearchList = async () => {
-  dockerHubSearchList.value  = [];
-  try {
-    const { data } = await searchDockerhub(searchKeyword.value)
-    
-    if(data.results.length > 0) {
-      for(let i=0; i<3; i++) {
-        dockerHubSearchList.value.push(data.results[i])
-      }
-    }
-  } catch(error) {
-    console.log(error)
-    toast.error('Unable to retrieve data.')
-  }
-}
-
-/**
-* @Method setArtifactHubSearchList
-* @Desc artifactHub API Call / data set
-*/
-const setArtifactHubSearchList = async () => {
-  artifactHubSearchList.value = [];
-  try {
-    const { data } = await searchArtifacthubhub(searchKeyword.value)
-    if(data.packages.length > 0) {
-      for(let i=0; i<3; i++) {
-        artifactHubSearchList.value.push(data.packages[i])
-      }
-    }
-  } catch(error) {
-    console.log(error)
-    toast.error('Unable to retrieve data.')
-  }
-}
-
-/**
-* @Method onClickCreate
-* @Desc Regist SoftwareCatalog Popup set
-*/
-const onClickCreate = (repoName: string, result: any) => {
-  // formMode.value = 'new'
-  selectCatalogIdx.value = 0;
-  repositoryApplicationInfo.value = result
-  repositoryName.value = repoName
 }
 
 /**
@@ -618,7 +400,7 @@ const onClickDelete = (catalog: any) => {
 }
 
 // 삭제 완료 이벤트 핸들러
-const onCatalogDeleted = async (catalogId: number) => {
+const onCatalogDeleted = async () => {
   // 목록 새로고침
   await _getSoftwareCatalogList()
 }
@@ -626,24 +408,6 @@ const onCatalogDeleted = async (catalogId: number) => {
 // 모달 닫기 이벤트 핸들러
 const onDeleteModalClose = () => {
   deleteTargetCatalog.value = {}
-}
-
-/**
-* @Method onClickMovePageDockerHub
-* @Desc Move the page to Docker Hub
-*/
-const onClickMovePageDockerHub = () => {
-  let dockerHubUrl = `https://hub.docker.com/search?q=${searchKeyword.value}`;
-  window.open(dockerHubUrl, '_blank');
-}
-
-/**
-* @Method onClickMovePageArtifactHub
-* @Desc Move the page to Artifact Hub
-*/
-const onClickMovePageArtifactHub = () => {
-  let artifactHubUrl = `https://artifacthub.io/packages/search?ts_query_web=${searchKeyword.value}&sort=relevance&page=1`;
-  window.open(artifactHubUrl, '_blank');
 }
 
 const showSoftwareCatalogDetail = async (idx:any) => {
@@ -842,64 +606,6 @@ const formattedText = (text:string) => {
   return text.replace(/\\n|\n/g, '<br/>');
 }
 
-/**
-* @Method onClickUpload
-* @Desc Upload 팝업 열기 및 데이터 설정
-*/
-const onClickUpload = (sourceData: any, sourceType: string) => {
-  
-  // 업로드 데이터 설정
-  uploadData.value = sourceData
-  uploadData.value.sourceType = sourceType
-  
-  // 업로드 폼 모달 열기
-  if (uploadFormModal.value) {
-    uploadFormModal.value.show()
-  }
-}
-
-/**
-* @Method onUploaded
-* @Desc 업로드 완료 이벤트 핸들러
-*/
-const onUploaded = async (uploadFormData: any) => {
-  if(uploadFormData.sourceType == 'DockerHub') {
-    // Backend에 맞게 데이터 변환
-    uploadFormData.createdAt = uploadFormData.created_at
-    uploadFormData.updatedAt = uploadFormData.updated_at
-    uploadFormData.shortDescription = uploadFormData.short_description
-    uploadFormData.starCount = uploadFormData.star_count
-    uploadFormData.ratePlans = uploadFormData.rate_plans
-
-    delete uploadFormData.created_at
-    delete uploadFormData.updated_at
-    delete uploadFormData.short_description
-    delete uploadFormData.star_count
-    delete uploadFormData.rate_plans
-
-
-    const { data } = await upLoadDockerHubApplication(uploadFormData)
-  } else if(uploadFormData.sourceType == 'ArtifactHub') {
-    const { data } = await upLoadArtifactHubApplication(uploadFormData)
-  }
-
-  toast.success('Software catalog uploaded successfully!')
-  
-  // 업로드 완료 후 처리 로직 추가 (API 호출 등)
-  // TODO: 실제 업로드 API 호출
-}
-
-/**
-* @Method onUploadModalClose
-* @Desc 업로드 모달 닫기 이벤트 핸들러
-*/
-const onUploadModalClose = () => {
-  uploadData.value = {
-    sourceType: '',
-    name: '',
-    sourceData: {}
-  }
-}
 </script>
 
 <style>
@@ -926,12 +632,6 @@ body {
    transition: opacity 0.15s ease-in-out;
  }
  .list-group-item:hover .mouse-hover {
-   opacity: 1;
- }
- #resultDockerHubSearch .card:hover .mouse-hover {
-   opacity: 1;
- }
- #resultArtifactHubSearch .card:hover .mouse-hover {
    opacity: 1;
  }
  .catalog-icon,

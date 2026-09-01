@@ -1,7 +1,9 @@
 package kr.co.mcmp.softwarecatalog.kubernetes.config;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
@@ -12,12 +14,23 @@ import io.fabric8.kubernetes.client.Config;
 import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
 import kr.co.mcmp.ape.cbtumblebug.dto.K8sClusterDto;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 @Component
-@Slf4j
 @RequiredArgsConstructor
 public class KubeconfigResolver {
+
+    private static final Set<String> TUMBLEBUG_TOKEN_AUTH_PROVIDERS = Set.of(
+            "aws",
+            "gcp",
+            "ncp",
+            "ncloud",
+            "naver",
+            "navercloud",
+            "naver-cloud",
+            "ncp-vpc",
+            "ncpvpc",
+            "ncp-classic",
+            "ncpclassic");
 
     private final CbtumblebugRestApi cbtumblebugRestApi;
     private final KubeConfigProviderFactory providerFactory;
@@ -58,26 +71,26 @@ public class KubeconfigResolver {
     }
 
     private boolean usesTumblebugNativeAuth(String providerName) {
-        return StringUtils.equalsIgnoreCase(providerName, "aws")
-                || StringUtils.equalsIgnoreCase(providerName, "gcp");
+        return providerName != null
+                && TUMBLEBUG_TOKEN_AUTH_PROVIDERS.contains(providerName.toLowerCase(Locale.ROOT));
     }
 
     @SuppressWarnings("unchecked")
     private String injectToken(String kubeconfigYaml, String token) {
         if (StringUtils.isBlank(token)) {
-            return kubeconfigYaml;
+            throw new IllegalStateException("Tumblebug returned an empty Kubernetes token");
         }
 
         Yaml yaml = new Yaml();
         Object loaded = yaml.load(kubeconfigYaml);
         if (!(loaded instanceof Map<?, ?> rootMap)) {
-            return kubeconfigYaml;
+            throw new IllegalStateException("Tumblebug returned an invalid kubeconfig document");
         }
 
         Map<String, Object> root = (Map<String, Object>) rootMap;
         Object usersObject = root.get("users");
         if (!(usersObject instanceof List<?> users)) {
-            return kubeconfigYaml;
+            throw new IllegalStateException("Tumblebug kubeconfig does not contain users");
         }
 
         boolean updated = false;
@@ -99,8 +112,7 @@ public class KubeconfigResolver {
         }
 
         if (!updated) {
-            log.warn("No kubeconfig users were updated with Tumblebug token");
-            return kubeconfigYaml;
+            throw new IllegalStateException("No kubeconfig user could be updated with the Tumblebug token");
         }
 
         DumperOptions options = new DumperOptions();

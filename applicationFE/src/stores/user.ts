@@ -51,7 +51,7 @@ export const useUserStore = defineStore('user', {
       this.operationId = userData.operationId
     },
     getNsId () {
-      return this.projectInfo.ns_id
+      return this.projectInfo?.ns_id || this.projectInfo?.nsid || this.projectInfo?.nsId || this.projectInfo?.NsId || null
     },
     clearUser() {
       this.accessToken = null,

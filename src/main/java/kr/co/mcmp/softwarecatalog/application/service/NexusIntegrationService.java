@@ -78,6 +78,16 @@ public interface NexusIntegrationService {
      * @return 이미지 존재 여부
      */
     boolean checkImageExistsInNexus(String imageName, String tag);
+
+    /**
+     * 지정한 Helm Repository에 Chart의 정확한 버전과 실제 패키지 asset이 존재하는지 확인합니다.
+     *
+     * @param repositoryName Nexus Helm Repository 이름
+     * @param chartName Helm Chart 이름
+     * @param chartVersion Helm Chart 버전
+     * @return 정확히 일치하는 Helm Chart 패키지 존재 여부
+     */
+    boolean checkHelmChartExistsInNexus(String repositoryName, String chartName, String chartVersion);
     
     /**
      * 넥서스에 이미지를 푸시하고 카탈로그에 등록합니다.

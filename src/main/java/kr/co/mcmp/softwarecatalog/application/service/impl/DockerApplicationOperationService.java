@@ -7,8 +7,6 @@ import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
-import com.github.dockerjava.api.DockerClient;
-
 import kr.co.mcmp.softwarecatalog.application.constants.ActionType;
 import kr.co.mcmp.softwarecatalog.application.constants.DeploymentType;
 import kr.co.mcmp.softwarecatalog.application.constants.ApplicationStatusValues;
@@ -18,8 +16,7 @@ import kr.co.mcmp.softwarecatalog.application.repository.ApplicationStatusReposi
 import kr.co.mcmp.softwarecatalog.application.repository.DeploymentHistoryRepository;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOperationService;
-import kr.co.mcmp.softwarecatalog.docker.service.ContainerStatsCollector;
-import kr.co.mcmp.softwarecatalog.docker.service.DockerClientFactory;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 import kr.co.mcmp.softwarecatalog.docker.service.DockerOperationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,9 +34,7 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
 
     private final ApplicationStatusRepository applicationStatusRepository;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
-    private final DockerClientFactory dockerClientFactory;
     private final DockerOperationService dockerOperationService;
-    private final ContainerStatsCollector containerStatsCollector;
     private final ApplicationHistoryService applicationHistoryService;
     
     @Override
@@ -53,12 +48,18 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
         result.put("success", false);
     
         try {
-            String host = applicationStatus.getPublicIp();
+            DockerTarget target = new DockerTarget(
+                    applicationStatus.getNamespace(),
+                    applicationStatus.getMciId(),
+                    applicationStatus.getVmId());
             String containerName = applicationStatus.getCatalog().getName().toLowerCase().replaceAll("\\s+", "-");
-            String containerId;
-
-            try (DockerClient dockerClient = dockerClientFactory.getDockerClient(host)) {
-                containerId = containerStatsCollector.getContainerId(dockerClient, containerName);
+            String containerId = applicationStatus.getContainerId();
+            if (containerId == null || containerId.isBlank()) {
+                containerId = dockerOperationService.getContainerId(target, containerName);
+                if (containerId != null) {
+                    applicationStatus.setContainerId(containerId);
+                    applicationStatusRepository.save(applicationStatus);
+                }
             }
 
             if (containerId == null) {
@@ -74,27 +75,27 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
 
             switch (operation.toString().toLowerCase()) {
                 case "status":
-                    String status = dockerOperationService.getDockerContainerStatus(host, containerId);
+                    String status = dockerOperationService.getDockerContainerStatus(target, containerId);
                     result.put("status", status);
                     break;
                 case "stop":
-                    String stopResult = dockerOperationService.stopDockerContainer(host, containerId);
+                    String stopResult = dockerOperationService.stopDockerContainer(target, containerId);
                     result.put("result", stopResult);
                     break;
                 case "start":
-                    String startResult = dockerOperationService.startDockerContainer(host, containerId);
+                    String startResult = dockerOperationService.startDockerContainer(target, containerId);
                     result.put("result", startResult);
                     break;
                 case "uninstall":
-                    String removeResult = dockerOperationService.removeDockerContainer(host, containerId);
+                    String removeResult = dockerOperationService.removeDockerContainer(target, containerId);
                     result.put("result", removeResult);
                     break;
                 case "restart":
-                    String restartResult = dockerOperationService.restartDockerContainer(host, containerId);
+                    String restartResult = dockerOperationService.restartDockerContainer(target, containerId);
                     result.put("result", restartResult);
                     break;
                 case "isrunning":
-                    boolean isRunning = dockerOperationService.isContainerRunning(host, containerId);
+                    boolean isRunning = dockerOperationService.isContainerRunning(target, containerId);
                     result.put("isRunning", isRunning);
                     break;
                 default:
@@ -178,5 +179,4 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
         deploymentHistoryRepository.save(deploymentHistory);
     }
 }
-
 

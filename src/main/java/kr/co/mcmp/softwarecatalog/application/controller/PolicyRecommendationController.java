@@ -10,12 +10,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import kr.co.mcmp.response.ResponseWrapper;
 import kr.co.mcmp.softwarecatalog.application.dto.OperationProfileAnalysisDTO;
 import kr.co.mcmp.softwarecatalog.application.dto.PolicyRecommendationDTO;
 import kr.co.mcmp.softwarecatalog.application.service.PolicyRecommendationService;
+import kr.co.mcmp.security.project.ProjectScopeAuthorizationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -26,12 +28,15 @@ import lombok.extern.slf4j.Slf4j;
 public class PolicyRecommendationController {
 
     private final PolicyRecommendationService policyRecommendationService;
+    private final ProjectScopeAuthorizationService projectScopeAuthorizationService;
 
     @Operation(summary = "Analyze operation profile", description = "Analyze archived operation data and create a policy recommendation.")
     @PostMapping("/{deploymentId}/operation-profile/analyze")
     public ResponseEntity<ResponseWrapper<OperationProfileAnalysisDTO>> analyze(
             @Parameter(description = "Deployment ID", required = true, example = "123") @PathVariable Long deploymentId,
-            @Parameter(description = "Analysis period days", example = "14") @RequestParam(required = false, defaultValue = "14") Integer days) {
+            @Parameter(description = "Analysis period days", example = "14") @RequestParam(required = false, defaultValue = "14") Integer days,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         OperationProfileAnalysisDTO result = policyRecommendationService.analyze(deploymentId, days);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
@@ -39,7 +44,9 @@ public class PolicyRecommendationController {
     @Operation(summary = "Run policy recommendation analysis", description = "Manually run the same standard analysis windows used by the scheduler: 90, 30, and 7 days.")
     @PostMapping("/{deploymentId}/policy-recommendation/analyze")
     public ResponseEntity<ResponseWrapper<List<OperationProfileAnalysisDTO>>> analyzeStandardPeriods(
-            @Parameter(description = "Deployment ID", required = true, example = "123") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID", required = true, example = "123") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         List<OperationProfileAnalysisDTO> result = policyRecommendationService.analyzeStandardPeriods(deploymentId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }
@@ -48,7 +55,9 @@ public class PolicyRecommendationController {
     @GetMapping("/{deploymentId}/operation-profile")
     public ResponseEntity<ResponseWrapper<OperationProfileAnalysisDTO>> getLatestAnalysis(
             @Parameter(description = "Deployment ID", required = true, example = "123") @PathVariable Long deploymentId,
-            @Parameter(description = "Analysis period days", example = "30") @RequestParam(required = false) Integer days) {
+            @Parameter(description = "Analysis period days", example = "30") @RequestParam(required = false) Integer days,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         OperationProfileAnalysisDTO result = days != null
                 ? policyRecommendationService.getAnalysis(deploymentId, days)
                 : policyRecommendationService.getLatestAnalysis(deploymentId);
@@ -58,7 +67,9 @@ public class PolicyRecommendationController {
     @Operation(summary = "Get latest policy recommendation", description = "Retrieve the latest policy recommendation for a deployment.")
     @GetMapping("/{deploymentId}/policy-recommendation")
     public ResponseEntity<ResponseWrapper<PolicyRecommendationDTO>> getLatestRecommendation(
-            @Parameter(description = "Deployment ID", required = true, example = "123") @PathVariable Long deploymentId) {
+            @Parameter(description = "Deployment ID", required = true, example = "123") @PathVariable Long deploymentId,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeDeployment(httpRequest, deploymentId);
         PolicyRecommendationDTO result = policyRecommendationService.getLatestRecommendation(deploymentId);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
     }

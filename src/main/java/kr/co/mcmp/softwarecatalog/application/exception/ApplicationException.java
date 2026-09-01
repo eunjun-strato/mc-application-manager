@@ -12,12 +12,13 @@ public class ApplicationException extends RuntimeException{
     private String detail;
 
     public ApplicationException(String message){
+        super(message);
         this.message = message;
     }
 
     public ApplicationException(int code, String message){
+        this(message);
         this.code = code;
-        this.message = message;
     }
 
     public ApplicationException(int code, String message, String detail){

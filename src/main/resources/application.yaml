@@ -6,6 +6,11 @@ config:
 app:
   scheduling:
     enabled: ${APP_SCHEDULING_ENABLED:true}
+  project-scope:
+    enabled: ${PROJECT_SCOPE_ENFORCEMENT_ENABLED:true}
+    iam-base-url: ${IAM_BASE_URL:http://mc-iam-manager:5000}
+    connect-timeout: ${IAM_CONNECT_TIMEOUT:2s}
+    read-timeout: ${IAM_READ_TIMEOUT:5s}
 
 spring:
   application:

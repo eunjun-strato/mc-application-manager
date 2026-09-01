@@ -138,8 +138,9 @@ public class ApplicationHistoryServiceImpl implements ApplicationHistoryService 
     /**
      * VM별 ApplicationStatus를 생성합니다. (다중 VM 배포용)
      */
-    public void createApplicationStatusForVm(DeploymentHistory history, String vmId, String publicIp, 
-                                           Integer servicePort, String status, User user) {
+    @Override
+    public void createApplicationStatusForVm(DeploymentHistory history, String vmId, String publicIp,
+                                           Integer servicePort, String status, User user, String containerId) {
         ApplicationStatus appStatus = applicationStatusRepository
                 .findByCatalogIdAndNamespaceAndMciIdAndVmId(
                         history.getCatalog().getId(),
@@ -161,6 +162,9 @@ public class ApplicationHistoryServiceImpl implements ApplicationHistoryService 
             appStatus.setVmId(vmId);
             appStatus.setPublicIp(publicIp);
             appStatus.setServicePort(servicePort);
+            if (containerId != null && !containerId.isBlank()) {
+                appStatus.setContainerId(containerId);
+            }
         }
         
         applicationStatusRepository.save(appStatus);
@@ -310,5 +314,4 @@ public class ApplicationHistoryServiceImpl implements ApplicationHistoryService 
         return StringUtils.isNotBlank(username) ? userService.findUserByUsername(username).orElse(null) : null;
     }
 }
-
 

@@ -21,11 +21,13 @@ public interface ApplicationStatusRepository extends JpaRepository<ApplicationSt
     ApplicationStatus findTopByCatalogOrderByCheckedAtDesc(SoftwareCatalog catalog);
     Optional<ApplicationStatus> findByCatalogIdAndExecutedBy(Long catalogId, User user);
     Optional<ApplicationStatus> findTopByExecutedByOrderByCheckedAtDesc(User executedBy);
+    Optional<ApplicationStatus> findTopByNamespaceAndExecutedByOrderByCheckedAtDesc(String namespace, User executedBy);
     
     @Query("SELECT DISTINCT a.namespace, a.mciId, a.vmId FROM ApplicationStatus a")
     List<Object[]> findDistinctVmGroups();
 
     List<ApplicationStatus> findByNamespaceAndMciIdAndVmId(String namespace, String mciId, String vmId);
+    List<ApplicationStatus> findByNamespace(String namespace);
     Optional<ApplicationStatus> findTopByCatalogIdOrderByCheckedAtDesc(Long catalogId);
     
     // VM별 ApplicationStatus 검색 (catalogId + namespace + mciId + vmId 조합)

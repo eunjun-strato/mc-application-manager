@@ -54,6 +54,9 @@ public class DeploymentHistory {
     @Column(name = "vm_id")
     private String vmId; // VM 배포에 사용
 
+    @Column(name = "container_id", length = 64)
+    private String containerId; // Docker VM deployment container identifier
+
     @Column(name = "cluster_name")
     private String clusterName; // K8s 배포에 사용
     
