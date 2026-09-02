@@ -210,8 +210,31 @@
             <!-- VM :: Service Port -->
             <div class="mb-3">
               <label class="form-label">Port</label>
-              <p class="text-muted">Please enter a port accessible from the outside</p>
+              <p class="text-muted">Docker host port. Security Group access is configured separately below.</p>
               <input type="number"  class="form-control" placeholder="8080"  v-model="inputServicePort">
+            </div>
+
+            <div class="mb-3" v-if="modalTitle == 'Application Installation'">
+              <label class="form-label">Network Exposure</label>
+              <select class="form-select" v-model="vmNetworkExposureMode">
+                <option value="PRIVATE">Do not change Security Group (recommended)</option>
+                <option value="RESTRICTED">Add restricted direct access</option>
+              </select>
+              <p class="text-muted mt-1 mb-0">
+                Direct access appends one inbound TCP rule through Tumblebug. It never resaves existing rules.
+              </p>
+
+              <div class="mt-2" v-if="vmNetworkExposureMode === 'RESTRICTED'">
+                <label class="form-label required">Allowed IPv4 CIDR</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  placeholder="203.0.113.10/32"
+                  v-model.trim="servicePortCidr">
+                <p class="text-warning mt-1 mb-0">
+                  Public any (0.0.0.0/0) is rejected. Broader rules already present in the Security Group are not removed.
+                </p>
+              </div>
             </div>
 
             <div class="mb-3" v-if="modalTitle == 'Application Installation'">
@@ -746,6 +769,8 @@ const clusterList = ref([] as any)
 const selectCluster = ref("" as string)
 const inputApplications = ref("" as string)
 const inputServicePort = ref("" as string)
+const vmNetworkExposureMode = ref<'PRIVATE' | 'RESTRICTED'>('PRIVATE')
+const servicePortCidr = ref("" as string)
 const specCheckFlag = ref(true as boolean)
 const selectedCatalogIdx = ref(0 as number)
 const projectScopeError = ref('')
@@ -913,6 +938,8 @@ const setInit = async () => {
   storageClassLoadError.value = false
   selectedResourceType.value = "GENERAL_PURPOSE"
   inputServicePort.value = ""
+  vmNetworkExposureMode.value = 'PRIVATE'
+  servicePortCidr.value = ""
   inputApplications.value = ""
   selectedCatalogIdx.value = 0
 
@@ -1282,6 +1309,15 @@ const runInstall = async () => {
     toast.error('Please Select Infra')
     return
   }
+  if (
+    selectInfra.value === 'VM'
+    && modalTitle.value === 'Application Installation'
+    && vmNetworkExposureMode.value === 'RESTRICTED'
+    && (!servicePortCidr.value || servicePortCidr.value === '0.0.0.0/0')
+  ) {
+    toast.error('Enter a restricted IPv4 CIDR such as 203.0.113.10/32')
+    return
+  }
   if (selectInfra.value === 'K8S' && !validateStorageClassSelection()) return
 
   deploying.value = true
@@ -1306,6 +1342,8 @@ const runInstall = async () => {
           clusterName: clusterName,
           catalogId: selectedCatalogIdx.value,
           servicePort,
+          openServicePort: vmNetworkExposureMode.value === 'RESTRICTED',
+          servicePortCidr: vmNetworkExposureMode.value === 'RESTRICTED' ? servicePortCidr.value : undefined,
           username: "admin",
           deploymentType: selectInfra.value,
           vmDeploymentMode: selectDeploymentType.value.toUpperCase(),

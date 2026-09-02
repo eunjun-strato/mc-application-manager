@@ -445,6 +445,49 @@ public class CbtumblebugRestApi {
         });
     }
 
+    /**
+     * Adds one restricted inbound TCP rule without resubmitting the Security
+     * Group's existing rules. In particular, existing ALL protocol rules must
+     * not be copied into this request because CB-Tumblebug's full update path
+     * can reject them during port validation.
+     */
+    public String addInboundTcpFirewallRule(
+            String nsId,
+            String securityGroupId,
+            int port,
+            String cidr) {
+        return executeWithConnectionCheck("addInboundTcpFirewallRule", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/securityGroup/%s/rules",
+                    nsId,
+                    securityGroupId));
+            HttpHeaders headers = createCommonHeaders();
+
+            Map<String, Object> firewallRule = new HashMap<>();
+            firewallRule.put("Direction", "inbound");
+            firewallRule.put("Protocol", "TCP");
+            firewallRule.put("CIDR", cidr);
+            firewallRule.put("Ports", String.valueOf(port));
+
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("firewallRules", List.of(firewallRule));
+
+            try {
+                String jsonBody = new ObjectMapper().writeValueAsString(requestBody);
+                ResponseEntity<String> response = restClient.request(
+                        apiUrl,
+                        headers,
+                        jsonBody,
+                        HttpMethod.POST,
+                        new ParameterizedTypeReference<String>() {
+                        });
+                return response.getBody();
+            } catch (JsonProcessingException e) {
+                throw new CbtumblebugException("Failed to serialize firewall rule request: " + e.getMessage());
+            }
+        });
+    }
+
     public VmSpecDto lookupVmSpec(String connectionName, String vmSpecName) {
         log.info("Fetching VM Spec info for connection: {}, specName: {}", connectionName, vmSpecName);
         return executeWithConnectionCheck("lookupVmSpec", () -> {

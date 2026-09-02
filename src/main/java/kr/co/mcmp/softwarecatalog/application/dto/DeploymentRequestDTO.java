@@ -26,6 +26,8 @@ public class DeploymentRequestDTO {
     private String clusterName;     // K8s 배포시
     private Long catalogId;
     private Integer servicePort;    // VM 배포시
+    private Boolean openServicePort; // VM 배포시 Tumblebug SG에 제한된 inbound 규칙 추가
+    private String servicePortCidr;  // 0.0.0.0/0을 제외한 접근 허용 CIDR
     private String username;
     private DeploymentType deploymentType;
     private VmDeploymentMode vmDeploymentMode;  // VM 배포 방식 (Standalone/Clustering)
@@ -63,6 +65,8 @@ public class DeploymentRequestDTO {
                 .clusterName(this.clusterName)
                 .catalogId(this.catalogId)
                 .servicePort(this.servicePort)
+                .openServicePort(this.openServicePort)
+                .servicePortCidr(this.servicePortCidr)
                 .username(this.username)
                 .deploymentType(this.deploymentType)
                 .vmDeploymentMode(this.vmDeploymentMode)

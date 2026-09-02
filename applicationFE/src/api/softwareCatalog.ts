@@ -39,6 +39,8 @@ export const runVmInstall = (params: {
   clusterName: string,
   catalogId: number,
   servicePort?: number,
+  openServicePort?: boolean,
+  servicePortCidr?: string,
   username: string,
   deploymentType: string,
   vmDeploymentMode: string,

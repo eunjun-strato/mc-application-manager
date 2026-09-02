@@ -30,6 +30,7 @@ import kr.co.mcmp.softwarecatalog.application.repository.DeploymentHistoryReposi
 import kr.co.mcmp.softwarecatalog.application.repository.InfraSpecSnapshotRepository;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
+import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.application.config.NexusConfig;
 import kr.co.mcmp.softwarecatalog.docker.model.ContainerDeployResult;
 import kr.co.mcmp.softwarecatalog.docker.model.DockerHostResourceInfo;
@@ -53,6 +54,7 @@ public class DockerDeploymentService implements DeploymentService {
     private final DockerSetupService dockerSetupService;
     private final DockerOperationService dockerOperationService;
     private final CbtumblebugRestApi cbtumblebugRestApi;
+    private final VmSecurityGroupExposureService vmSecurityGroupExposureService;
     private final ApplicationHistoryService applicationHistoryService;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final InfraSpecSnapshotRepository infraSpecSnapshotRepository;
@@ -414,6 +416,21 @@ public class DockerDeploymentService implements DeploymentService {
             if (containerId != null && !containerId.isEmpty()) {
                 boolean isRunning = dockerOperationService.isContainerRunning(dockerTarget, containerId);
                 if (isRunning) {
+                    try {
+                        vmSecurityGroupExposureService.addRestrictedInboundRule(request, vmAccessInfo);
+                    } catch (RuntimeException exposureError) {
+                        try {
+                            dockerOperationService.removeDockerContainer(dockerTarget, containerId);
+                        } catch (RuntimeException rollbackError) {
+                            exposureError.addSuppressed(rollbackError);
+                            log.warn(
+                                    "Failed to remove container {} after network exposure failure on VM {}",
+                                    containerId,
+                                    vmId,
+                                    rollbackError);
+                        }
+                        throw exposureError;
+                    }
                     history.setContainerId(containerId);
                     history.setVmId(vmId);
                     history.setPublicIp(vmAccessInfo.getPublicIP());
