@@ -25,10 +25,12 @@ import kr.co.mcmp.softwarecatalog.application.dto.IntegratedApplicationInfoDTO;
 import kr.co.mcmp.softwarecatalog.application.dto.K8sStorageClassDTO;
 import kr.co.mcmp.softwarecatalog.application.dto.ObjectStorageSmokeTestRequest;
 import kr.co.mcmp.softwarecatalog.application.dto.ObjectStorageSmokeTestResponse;
+import kr.co.mcmp.softwarecatalog.application.dto.RegisteredObjectStorageDTO;
 import kr.co.mcmp.softwarecatalog.application.model.DeploymentHistory;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationService;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOrchestrationService;
 import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageSmokeTestService;
+import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageRegistryService;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequestDTO;
 import kr.co.mcmp.softwarecatalog.application.constants.DeploymentType;
@@ -48,6 +50,7 @@ public class ApplicationController {
     private final ApplicationService applicationService;
     private final ApplicationOrchestrationService applicationOrchestrationService;
     private final ObjectStorageSmokeTestService objectStorageSmokeTestService;
+    private final ObjectStorageRegistryService objectStorageRegistryService;
     private final KubernetesStorageClassService kubernetesStorageClassService;
     private final ProjectScopeAuthorizationService projectScopeAuthorizationService;
 
@@ -117,6 +120,30 @@ public class ApplicationController {
         projectScopeAuthorizationService.authorizeNamespace(httpRequest, request.getNamespace());
         ObjectStorageSmokeTestResponse result = objectStorageSmokeTestService.runSmokeTest(request);
         return ResponseEntity.ok(new ResponseWrapper<>(result));
+    }
+
+    @Operation(
+            summary = "Check registered Object Storage for a VM application",
+            description = "Verify listing and presigned URL support through Tumblebug before deploying JupyterLab.")
+    @PostMapping("/vm/object-storage/smoke-check")
+    public ResponseEntity<ResponseWrapper<ObjectStorageSmokeTestResponse>> checkVmObjectStorage(
+            @Parameter(description = "Object Storage smoke check request", required = true)
+            @RequestBody ObjectStorageSmokeTestRequest request,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, request.getNamespace());
+        ObjectStorageSmokeTestResponse result = objectStorageSmokeTestService.runSmokeTest(request);
+        return ResponseEntity.ok(new ResponseWrapper<>(result));
+    }
+
+    @Operation(
+            summary = "List registered Object Storage resources",
+            description = "List Object Storage resources registered in Tumblebug for the selected namespace.")
+    @GetMapping("/object-storages")
+    public ResponseEntity<ResponseWrapper<List<RegisteredObjectStorageDTO>>> getObjectStorages(
+            @RequestParam String namespace,
+            HttpServletRequest httpRequest) {
+        projectScopeAuthorizationService.authorizeNamespace(httpRequest, namespace);
+        return ResponseEntity.ok(new ResponseWrapper<>(objectStorageRegistryService.list(namespace)));
     }
 
     @Operation(summary = "List K8s StorageClasses", description = "Retrieve StorageClasses from the selected K8s cluster.")

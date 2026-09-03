@@ -34,6 +34,7 @@ import kr.co.mcmp.softwarecatalog.application.service.ApplicationOperationServic
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOrchestrationService;
 import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
 import kr.co.mcmp.softwarecatalog.application.service.SpecValidationService;
+import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.users.Entity.User;
 import kr.co.mcmp.softwarecatalog.users.service.UserService;
 import lombok.RequiredArgsConstructor;
@@ -56,6 +57,7 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
     private final List<ApplicationOperationService> operationServices;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final OperationHistoryRepository operationHistoryRepository;
+    private final VmSecurityGroupExposureService vmSecurityGroupExposureService;
     
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -373,7 +375,8 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
             // VM 배포 삭제 로직
             log.info("Deleting VM application - MCI: {}, VM: {}", 
                     applicationStatus.getMciId(), applicationStatus.getVmId());
-            
+
+            vmSecurityGroupExposureService.releaseRestrictedInboundRule(deploymentHistory.getId());
             // VM 컨테이너 삭제 로직은 DockerOperationService에서 처리
             
         } catch (Exception e) {

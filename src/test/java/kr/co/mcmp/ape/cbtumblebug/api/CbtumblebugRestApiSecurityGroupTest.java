@@ -16,6 +16,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpMethod;
 import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
@@ -72,5 +73,61 @@ class CbtumblebugRestApiSecurityGroupTest {
         assertThat(rule.path("CIDR").asText()).isEqualTo("203.0.113.10/32");
         assertThat(rule.path("Ports").asText()).isEqualTo("8888");
         assertThat(ruleBody).doesNotContain("ALL");
+    }
+
+    @Test
+    void detectsAnExistingExactInboundRule() {
+        when(restClient.request(anyString(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String url = invocation.getArgument(0);
+                    return url.endsWith("/readyz")
+                            ? ResponseEntity.ok("ready")
+                            : ResponseEntity.ok("""
+                                    {"firewallRules":[
+                                      {"Direction":"inbound","Protocol":"TCP","CIDR":"203.0.113.10/32","Port":"8888"}
+                                    ]}
+                                    """);
+                });
+
+        assertThat(api.hasInboundTcpFirewallRule(
+                "ns01", "sg01", 8888, "203.0.113.10/32")).isTrue();
+    }
+
+    @Test
+    void deletesOnlyTheExactTcpRuleThroughTheDedicatedEndpoint() throws Exception {
+        when(restClient.request(anyString(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String url = invocation.getArgument(0);
+                    return url.endsWith("/readyz")
+                            ? ResponseEntity.ok("ready")
+                            : ResponseEntity.ok("{\"success\":true}");
+                });
+
+        api.deleteInboundTcpFirewallRule("ns01", "sg01", 8888, "203.0.113.10/32");
+
+        ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> bodyCaptor = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<HttpMethod> methodCaptor = ArgumentCaptor.forClass(HttpMethod.class);
+        verify(restClient, atLeast(2)).request(
+                urlCaptor.capture(), any(), bodyCaptor.capture(), methodCaptor.capture(), any());
+
+        int ruleRequest = -1;
+        for (int i = 0; i < urlCaptor.getAllValues().size(); i++) {
+            if (urlCaptor.getAllValues().get(i).contains("/resources/securityGroup/sg01/rules")) {
+                ruleRequest = i;
+                break;
+            }
+        }
+        assertThat(ruleRequest).isGreaterThanOrEqualTo(0);
+        assertThat(methodCaptor.getAllValues().get(ruleRequest)).isEqualTo(HttpMethod.DELETE);
+
+        JsonNode rule = new ObjectMapper()
+                .readTree((String) bodyCaptor.getAllValues().get(ruleRequest))
+                .path("firewallRules")
+                .get(0);
+        assertThat(rule.path("Direction").asText()).isEqualTo("inbound");
+        assertThat(rule.path("Protocol").asText()).isEqualTo("TCP");
+        assertThat(rule.path("CIDR").asText()).isEqualTo("203.0.113.10/32");
+        assertThat(rule.path("Ports").asText()).isEqualTo("8888");
     }
 }

@@ -1,5 +1,6 @@
 package kr.co.mcmp.ape.cbtumblebug.api;
 
+import java.net.URI;
 
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
@@ -32,6 +33,28 @@ public class CbtumblebugRestClient {
             HttpEntity<?> entity = new HttpEntity<>(body, headers);
 
             return restTemplate.exchange(builder.toUriString(), httpMethod, entity, responseType);
+        } catch (HttpStatusCodeException e) {
+            log.error("HTTP error: {} {}", e.getRawStatusCode(), e.getStatusText());
+            log.error("Response body: {}", e.getResponseBodyAsString());
+            throw new CbtumblebugException(e.getRawStatusCode(), e.getResponseBodyAsString());
+        } catch (RestClientException e) {
+            log.error("RestClientException: ", e);
+            throw new CbtumblebugException(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Internal server error occurred");
+        } catch (Exception e) {
+            log.error("Unexpected error: ", e);
+            throw new CbtumblebugException(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Unexpected error occurred");
+        }
+    }
+
+    public <T> ResponseEntity<T> request(
+            URI apiUri,
+            HttpHeaders headers,
+            Object body,
+            HttpMethod httpMethod,
+            ParameterizedTypeReference<T> responseType) {
+        try {
+            HttpEntity<?> entity = new HttpEntity<>(body, headers);
+            return restTemplate.exchange(apiUri, httpMethod, entity, responseType);
         } catch (HttpStatusCodeException e) {
             log.error("HTTP error: {} {}", e.getRawStatusCode(), e.getStatusText());
             log.error("Response body: {}", e.getResponseBodyAsString());

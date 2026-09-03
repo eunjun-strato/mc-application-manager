@@ -1,5 +1,6 @@
 package kr.co.mcmp.softwarecatalog.application.service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
@@ -8,13 +9,15 @@ import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
 import kr.co.mcmp.ape.cbtumblebug.dto.VmAccessInfo;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest;
 import kr.co.mcmp.softwarecatalog.application.exception.ApplicationException;
+import kr.co.mcmp.softwarecatalog.application.model.DeploymentHistory;
+import kr.co.mcmp.softwarecatalog.application.model.VmSecurityGroupExposure;
+import kr.co.mcmp.softwarecatalog.application.repository.VmSecurityGroupExposureRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Opens a VM application port through CB-Tumblebug's additive firewall-rule
- * endpoint. This service deliberately never performs a full Security Group
- * update and never chooses arbitrarily when multiple groups are attached.
+ * Owns the lifecycle of VM application firewall rules added through
+ * CB-Tumblebug's additive and exact-delete endpoints.
  */
 @Service
 @RequiredArgsConstructor
@@ -22,27 +25,148 @@ import lombok.extern.slf4j.Slf4j;
 public class VmSecurityGroupExposureService {
 
     private final CbtumblebugRestApi cbtumblebugRestApi;
+    private final VmSecurityGroupExposureRepository repository;
 
-    public void addRestrictedInboundRule(DeploymentRequest request, VmAccessInfo vmAccessInfo) {
+    /**
+     * Adds and records one restricted inbound rule for a deployment. A rule
+     * that existed before the deployment is recorded as operator-owned and is
+     * therefore never removed by Application Manager.
+     */
+    public synchronized void addRestrictedInboundRule(
+            DeploymentRequest request,
+            VmAccessInfo vmAccessInfo,
+            DeploymentHistory deploymentHistory) {
         if (!Boolean.TRUE.equals(request.getOpenServicePort())) {
+            return;
+        }
+        if (deploymentHistory == null || deploymentHistory.getId() == null) {
+            throw new ApplicationException("Deployment history is required to track direct access");
+        }
+        if (repository.findByDeploymentId(deploymentHistory.getId()).isPresent()) {
+            log.info("VM Security Group exposure is already tracked for deploymentId={}",
+                    deploymentHistory.getId());
             return;
         }
 
         int port = validatePort(request.getServicePort());
         String cidr = validateRestrictedIpv4Cidr(request.getServicePortCidr());
         String securityGroupId = resolveSingleAttachedSecurityGroup(vmAccessInfo);
+        String namespace = requiredNamespace(request.getNamespace());
 
-        cbtumblebugRestApi.addInboundTcpFirewallRule(
-                request.getNamespace(),
+        List<VmSecurityGroupExposure> sharedExposures = repository
+                .findByNamespaceAndSecurityGroupIdAndServicePortAndAllowedCidrAndReleasedAtIsNull(
+                        namespace,
+                        securityGroupId,
+                        port,
+                        cidr);
+        boolean ruleAlreadyExists = cbtumblebugRestApi.hasInboundTcpFirewallRule(
+                namespace,
                 securityGroupId,
                 port,
                 cidr);
+        boolean managedByApplicationManager = !ruleAlreadyExists
+                || sharedExposures.stream()
+                        .anyMatch(exposure -> Boolean.TRUE.equals(exposure.getManagedByApplicationManager()));
+
+        VmSecurityGroupExposure exposure = repository.saveAndFlush(VmSecurityGroupExposure.builder()
+                .deploymentId(deploymentHistory.getId())
+                .vmId(vmAccessInfo.getId())
+                .namespace(namespace)
+                .securityGroupId(securityGroupId)
+                .servicePort(port)
+                .allowedCidr(cidr)
+                .managedByApplicationManager(managedByApplicationManager)
+                .createdAt(LocalDateTime.now())
+                .build());
+
+        try {
+            if (!ruleAlreadyExists) {
+                cbtumblebugRestApi.addInboundTcpFirewallRule(
+                        namespace,
+                        securityGroupId,
+                        port,
+                        cidr);
+            }
+            exposure.setProvisionedAt(LocalDateTime.now());
+            repository.saveAndFlush(exposure);
+        } catch (RuntimeException e) {
+            repository.delete(exposure);
+            throw e;
+        }
+
         log.info(
-                "Added restricted inbound TCP rule through Tumblebug: vmId={}, securityGroupId={}, port={}, cidr={}",
+                "Tracked restricted inbound TCP rule: deploymentId={}, vmId={}, securityGroupId={}, port={}, cidr={}, managedByApplicationManager={}",
+                deploymentHistory.getId(),
                 vmAccessInfo.getId(),
                 securityGroupId,
                 port,
-                cidr);
+                cidr,
+                managedByApplicationManager);
+    }
+
+    /**
+     * Releases the rule binding for one deployment. Shared rules remain until
+     * the last dependent deployment is removed. Ownership is transferred to
+     * the remaining bindings so deletion order cannot leak an AM-created rule.
+     */
+    public synchronized void releaseRestrictedInboundRule(Long deploymentId) {
+        if (deploymentId == null) {
+            return;
+        }
+
+        VmSecurityGroupExposure exposure = repository
+                .findByDeploymentIdAndReleasedAtIsNull(deploymentId)
+                .orElse(null);
+        if (exposure == null) {
+            return;
+        }
+
+        List<VmSecurityGroupExposure> remaining = repository
+                .findByNamespaceAndSecurityGroupIdAndServicePortAndAllowedCidrAndReleasedAtIsNull(
+                        exposure.getNamespace(),
+                        exposure.getSecurityGroupId(),
+                        exposure.getServicePort(),
+                        exposure.getAllowedCidr())
+                .stream()
+                .filter(candidate -> !candidate.getId().equals(exposure.getId()))
+                .toList();
+
+        LocalDateTime now = LocalDateTime.now();
+        if (!remaining.isEmpty()) {
+            if (Boolean.TRUE.equals(exposure.getManagedByApplicationManager())) {
+                remaining.forEach(candidate -> candidate.setManagedByApplicationManager(true));
+                repository.saveAllAndFlush(remaining);
+            }
+            exposure.setReleasedAt(now);
+            repository.saveAndFlush(exposure);
+            log.info("Kept shared inbound rule for {} remaining deployment(s): securityGroupId={}, port={}, cidr={}",
+                    remaining.size(),
+                    exposure.getSecurityGroupId(),
+                    exposure.getServicePort(),
+                    exposure.getAllowedCidr());
+            return;
+        }
+
+        if (Boolean.TRUE.equals(exposure.getManagedByApplicationManager())) {
+            cbtumblebugRestApi.deleteInboundTcpFirewallRule(
+                    exposure.getNamespace(),
+                    exposure.getSecurityGroupId(),
+                    exposure.getServicePort(),
+                    exposure.getAllowedCidr());
+            exposure.setRuleRemovedAt(now);
+            log.info("Removed Application Manager inbound rule: securityGroupId={}, port={}, cidr={}",
+                    exposure.getSecurityGroupId(),
+                    exposure.getServicePort(),
+                    exposure.getAllowedCidr());
+        } else {
+            log.info("Preserved pre-existing inbound rule: securityGroupId={}, port={}, cidr={}",
+                    exposure.getSecurityGroupId(),
+                    exposure.getServicePort(),
+                    exposure.getAllowedCidr());
+        }
+
+        exposure.setReleasedAt(now);
+        repository.saveAndFlush(exposure);
     }
 
     private int validatePort(Integer port) {
@@ -110,5 +234,12 @@ public class VmSecurityGroupExposureService {
                     "The target VM has multiple Security Groups; Application Manager will not choose one automatically");
         }
         return securityGroupIds.get(0);
+    }
+
+    private String requiredNamespace(String namespace) {
+        if (namespace == null || namespace.isBlank()) {
+            throw new ApplicationException("Namespace is required to configure direct access");
+        }
+        return namespace.trim();
     }
 }

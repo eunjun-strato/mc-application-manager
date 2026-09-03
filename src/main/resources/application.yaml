@@ -4,6 +4,10 @@ config:
   config-string: application,manager,m-cmp
 
 app:
+  object-storage:
+    gateway-public-base-url: ${OBJECT_STORAGE_GATEWAY_PUBLIC_BASE_URL:http://localhost:18084}
+    grant-ttl-hours: ${OBJECT_STORAGE_GATEWAY_GRANT_TTL_HOURS:8760}
+    presigned-url-ttl-seconds: ${OBJECT_STORAGE_PRESIGNED_URL_TTL_SECONDS:600}
   scheduling:
     enabled: ${APP_SCHEDULING_ENABLED:true}
   project-scope:

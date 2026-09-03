@@ -23,6 +23,7 @@ import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOperationService;
 import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
 import kr.co.mcmp.softwarecatalog.application.service.SpecValidationService;
+import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.users.service.UserService;
 
 @ExtendWith(MockitoExtension.class)
@@ -40,6 +41,8 @@ class ApplicationOrchestrationServiceProjectScopeTest {
     private DeploymentHistoryRepository deploymentHistoryRepository;
     @Mock
     private OperationHistoryRepository operationHistoryRepository;
+    @Mock
+    private VmSecurityGroupExposureService vmSecurityGroupExposureService;
 
     private ApplicationOrchestrationServiceImpl service;
 
@@ -53,7 +56,8 @@ class ApplicationOrchestrationServiceProjectScopeTest {
                 List.<DeploymentService>of(),
                 List.<ApplicationOperationService>of(),
                 deploymentHistoryRepository,
-                operationHistoryRepository);
+                operationHistoryRepository,
+                vmSecurityGroupExposureService);
     }
 
     @Test

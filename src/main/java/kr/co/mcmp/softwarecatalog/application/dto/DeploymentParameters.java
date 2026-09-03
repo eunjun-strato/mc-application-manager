@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,6 +41,11 @@ public class DeploymentParameters {
      * 볼륨 마운트
      */
     private String volumeMounts;
+
+    /**
+     * Container command arguments appended after the image name.
+     */
+    private List<String> commandArguments;
     
     /**
      * 리소스 제한

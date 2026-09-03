@@ -53,6 +53,7 @@ You can customize the following environment variables in the docker-compose.yaml
 - DB_USER : Database user ID
 - DB_PASS : Database user password 
 - SQL_DATA_INIT : always # or never
+- OBJECT_STORAGE_GATEWAY_PUBLIC_BASE_URL : Application Manager URL reachable from deployed VMs (for example, `http://<Public_IP>:18084`). Required for Jupyter Object Storage access.
 - Edit these environment variables according to your needs.
 
 ### Step 3: Install and Run Docker Compose
