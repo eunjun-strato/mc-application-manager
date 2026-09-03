@@ -1,8 +1,12 @@
 package kr.co.mcmp.ape.cbtumblebug.dto;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -15,6 +19,7 @@ import lombok.ToString;
 @NoArgsConstructor
 @AllArgsConstructor
 @ToString
+@JsonIgnoreProperties(ignoreUnknown = true)
 @Schema(description = "K8s Cluster information")
 public class K8sClusterDto {
 
@@ -101,6 +106,30 @@ public class K8sClusterDto {
     @JsonProperty("spiderViewK8sClusterDetail")
     @Schema(description = "Spider View K8s 클러스터 상세 정보")
     private SpiderViewK8sClusterDetail spiderViewK8sClusterDetail;
+
+    @JsonProperty("nodeGroups")
+    @Schema(description = "통합 클러스터 모델의 노드 그룹 목록")
+    private List<NodeGroup> nodeGroups;
+
+    /**
+     * Returns node groups from both the generalized ClusterInfo response and
+     * the legacy K8sClusterInfo response.
+     */
+    @JsonIgnore
+    public List<NodeGroup> getEffectiveNodeGroups() {
+        if (nodeGroups != null && !nodeGroups.isEmpty()) {
+            return nodeGroups;
+        }
+        if (spiderViewK8sClusterDetail != null
+                && spiderViewK8sClusterDetail.getNodeGroupList() != null) {
+            return spiderViewK8sClusterDetail.getNodeGroupList();
+        }
+        if (cspViewK8sClusterDetail != null
+                && cspViewK8sClusterDetail.getNodeGroupList() != null) {
+            return cspViewK8sClusterDetail.getNodeGroupList();
+        }
+        return Collections.emptyList();
+    }
 
     // --------------------------- nested classes ---------------------------
 
@@ -233,7 +262,16 @@ public class K8sClusterDto {
     @NoArgsConstructor
     @AllArgsConstructor
     @ToString
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class NodeGroup {
+        @JsonProperty("resourceType")
+        private String resourceType;
+        @JsonProperty("name")
+        private String name;
+        @JsonProperty("specId")
+        private String specId;
+        @JsonProperty("imageId")
+        private String imageId;
         @JsonProperty("IId")
         private IID iid;
         @JsonProperty("ImageIID")
@@ -241,25 +279,104 @@ public class K8sClusterDto {
         @JsonProperty("VMSpecName")
         private String vmSpecName;
         @JsonProperty("RootDiskType")
+        @JsonAlias("rootDiskType")
         private String rootDiskType;
         @JsonProperty("RootDiskSize")
+        @JsonAlias("rootDiskSize")
         private String rootDiskSize;
         @JsonProperty("KeyPairIID")
         private IID keyPairIID;
         @JsonProperty("OnAutoScaling")
+        @JsonAlias("onAutoScaling")
         private boolean onAutoScaling;
         @JsonProperty("DesiredNodeSize")
+        @JsonAlias("desiredNodeSize")
         private int desiredNodeSize;
         @JsonProperty("MinNodeSize")
+        @JsonAlias("minNodeSize")
         private int minNodeSize;
         @JsonProperty("MaxNodeSize")
+        @JsonAlias("maxNodeSize")
         private int maxNodeSize;
         @JsonProperty("Status")
+        @JsonAlias("status")
         private String status;
         @JsonProperty("Nodes")
         private List<IID> nodes;
         @JsonProperty("KeyValueList")
+        @JsonAlias("keyValueList")
         private List<KeyValue> keyValueList;
+        @JsonProperty("k8sNodes")
+        private List<K8sNodeInfo> k8sNodes;
+        @JsonProperty("spiderViewK8sNodeGroupDetail")
+        private NodeGroup spiderViewK8sNodeGroupDetail;
+
+        @JsonIgnore
+        public String getEffectiveName() {
+            if (name != null && !name.isBlank()) {
+                return name;
+            }
+            if (iid != null && iid.getNameId() != null && !iid.getNameId().isBlank()) {
+                return iid.getNameId();
+            }
+            if (spiderViewK8sNodeGroupDetail != null) {
+                return spiderViewK8sNodeGroupDetail.getEffectiveName();
+            }
+            return null;
+        }
+
+        @JsonIgnore
+        public String getEffectiveVmSpecName() {
+            if (vmSpecName != null && !vmSpecName.isBlank()) {
+                return vmSpecName;
+            }
+            if (spiderViewK8sNodeGroupDetail != null) {
+                String spiderVmSpecName = spiderViewK8sNodeGroupDetail.getEffectiveVmSpecName();
+                if (spiderVmSpecName != null && !spiderVmSpecName.isBlank()) {
+                    return spiderVmSpecName;
+                }
+            }
+            return specId;
+        }
+
+        @JsonIgnore
+        public List<IID> getEffectiveNodes() {
+            if (nodes != null && !nodes.isEmpty()) {
+                return nodes;
+            }
+            if (spiderViewK8sNodeGroupDetail != null) {
+                List<IID> spiderNodes = spiderViewK8sNodeGroupDetail.getEffectiveNodes();
+                if (!spiderNodes.isEmpty()) {
+                    return spiderNodes;
+                }
+            }
+            if (k8sNodes == null || k8sNodes.isEmpty()) {
+                return Collections.emptyList();
+            }
+            return k8sNodes.stream()
+                    .map(node -> new IID(node.getEffectiveName(), node.getCspResourceId()))
+                    .toList();
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @ToString
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class K8sNodeInfo {
+        @JsonProperty("cspResourceName")
+        private String cspResourceName;
+        @JsonProperty("cspResourceId")
+        private String cspResourceId;
+
+        @JsonIgnore
+        public String getEffectiveName() {
+            if (cspResourceName != null && !cspResourceName.isBlank()) {
+                return cspResourceName;
+            }
+            return cspResourceId;
+        }
     }
 
     @Data

@@ -1620,18 +1620,11 @@ public class KubernetesMonitoringService {
                     deployment.getNamespace(), deployment.getClusterName());
             
             if (clusterInfo != null) {
-                List<K8sClusterDto.NodeGroup> nodeGroupList = null;
-                if (clusterInfo.getSpiderViewK8sClusterDetail() != null) {
-                    nodeGroupList = clusterInfo.getSpiderViewK8sClusterDetail().getNodeGroupList();
-                } else if (clusterInfo.getCspViewK8sClusterDetail() != null) {
-                    nodeGroupList = clusterInfo.getCspViewK8sClusterDetail().getNodeGroupList();
-                }
+                List<K8sClusterDto.NodeGroup> nodeGroupList = clusterInfo.getEffectiveNodeGroups();
 
-                if (nodeGroupList != null && deployment.getNodeGroupName() != null) {
+                if (!nodeGroupList.isEmpty() && deployment.getNodeGroupName() != null) {
                     for (K8sClusterDto.NodeGroup nodeGroup : nodeGroupList) {
-                        if (nodeGroup.getIid() != null &&
-                            nodeGroup.getIid().getNameId() != null &&
-                            deployment.getNodeGroupName().equals(nodeGroup.getIid().getNameId())) {
+                        if (deployment.getNodeGroupName().equals(nodeGroup.getEffectiveName())) {
                             log.info("Current desired node size from cluster info: {}", nodeGroup.getDesiredNodeSize());
                             return nodeGroup.getDesiredNodeSize();
                         }
@@ -2188,31 +2181,21 @@ public class KubernetesMonitoringService {
                         ? clusterInfo.getCspViewK8sClusterDetail().getNodeGroupList().size() : 0);
             }
             
-            // SpiderViewK8sClusterDetail 또는 CspViewK8sClusterDetail에서 노드 그룹 정보 가져오기
-            List<K8sClusterDto.NodeGroup> nodeGroups = null;
+            List<K8sClusterDto.NodeGroup> nodeGroups = clusterInfo.getEffectiveNodeGroups();
+            log.info("Resolved {} node groups from the Tumblebug cluster response", nodeGroups.size());
             
-            if (clusterInfo.getSpiderViewK8sClusterDetail() != null) {
-                nodeGroups = clusterInfo.getSpiderViewK8sClusterDetail().getNodeGroupList();
-                log.info("Using SpiderViewK8sClusterDetail for node groups, found {} groups", 
-                        nodeGroups != null ? nodeGroups.size() : 0);
-            } else if (clusterInfo.getCspViewK8sClusterDetail() != null) {
-                nodeGroups = clusterInfo.getCspViewK8sClusterDetail().getNodeGroupList();
-                log.info("Using CspViewK8sClusterDetail for node groups, found {} groups", 
-                        nodeGroups != null ? nodeGroups.size() : 0);
-            }
-            
-            if (nodeGroups != null && !nodeGroups.isEmpty()) {
+            if (!nodeGroups.isEmpty()) {
                 log.info("Found {} node groups in cluster:", nodeGroups.size());
                 for (K8sClusterDto.NodeGroup ng : nodeGroups) {
                     log.info("  - NodeGroup: {}, AutoScaling: {}", 
-                            ng.getIid().getNameId(), ng.isOnAutoScaling());
+                            ng.getEffectiveName(), ng.isOnAutoScaling());
                 }
                 
                 // 적절한 노드 그룹 선택 (예: 오토스케일링이 활성화된 그룹)
                 K8sClusterDto.NodeGroup selectedNodeGroup = selectAppropriateNodeGroup(nodeGroups);
                 
                 if (selectedNodeGroup != null) {
-                    String nodeGroupName = selectedNodeGroup.getIid().getNameId();
+                    String nodeGroupName = selectedNodeGroup.getEffectiveName();
                     
                     // 조회된 노드 그룹 이름을 DeploymentHistory에 저장
                     deployment.setNodeGroupName(nodeGroupName);
@@ -2243,7 +2226,7 @@ public class KubernetesMonitoringService {
         // 1. 오토스케일링이 활성화된 노드 그룹 우선 선택
         for (K8sClusterDto.NodeGroup nodeGroup : nodeGroups) {
             if (nodeGroup.isOnAutoScaling()) {
-                log.info("Selected auto-scaling enabled node group: {}", nodeGroup.getIid().getNameId());
+                log.info("Selected auto-scaling enabled node group: {}", nodeGroup.getEffectiveName());
                 return nodeGroup;
             }
         }
@@ -2251,7 +2234,7 @@ public class KubernetesMonitoringService {
         // 2. 오토스케일링이 활성화된 그룹이 없으면 첫 번째 그룹 선택
         if (!nodeGroups.isEmpty()) {
             log.info("No auto-scaling enabled node group found, using first group: {}", 
-                    nodeGroups.get(0).getIid().getNameId());
+                    nodeGroups.get(0).getEffectiveName());
             return nodeGroups.get(0);
         }
         
@@ -2288,31 +2271,18 @@ public class KubernetesMonitoringService {
             
             log.info("Cluster info retrieved successfully: {}", clusterInfo.getName());
             
-            if (clusterInfo.getSpiderViewK8sClusterDetail() == null && clusterInfo.getCspViewK8sClusterDetail() == null) {
-                log.error("SpiderViewK8sClusterDetail and CspViewK8sClusterDetail are null for cluster: {}", clusterName);
-                log.warn("Will use default node count: {}", defaultNodeCount);
-                return defaultNodeCount;
-            }
+            List<K8sClusterDto.NodeGroup> nodeGroups = clusterInfo.getEffectiveNodeGroups();
             
-            log.info("CspViewK8sClusterDetail retrieved successfully");
+            log.info("Node groups found: {}", nodeGroups.size());
             
-            List<K8sClusterDto.NodeGroup> nodeGroups = null;
-            if (clusterInfo.getSpiderViewK8sClusterDetail() != null) {
-                nodeGroups = clusterInfo.getSpiderViewK8sClusterDetail().getNodeGroupList();
-            } else if (clusterInfo.getCspViewK8sClusterDetail() != null) {
-                nodeGroups = clusterInfo.getCspViewK8sClusterDetail().getNodeGroupList();
-            }
-            
-            log.info("Node groups found: {}", nodeGroups != null ? nodeGroups.size() : 0);
-            
-            if (nodeGroups != null) {
+            if (!nodeGroups.isEmpty()) {
                 for (K8sClusterDto.NodeGroup nodeGroup : nodeGroups) {
-                    String groupName = nodeGroup.getIid().getNameId();
+                    String groupName = nodeGroup.getEffectiveName();
                     log.debug("Checking node group: {}", groupName);
                     if (nodeGroupName.equals(groupName)) {
                         // 노드 리스트에서 실제 노드 수 확인
-                        List<K8sClusterDto.IID> nodes = nodeGroup.getNodes();
-                        if (nodes != null) {
+                        List<K8sClusterDto.IID> nodes = nodeGroup.getEffectiveNodes();
+                        if (!nodes.isEmpty()) {
                             int nodeCount = nodes.size();
                             log.debug("Current node count for group {}: {}", nodeGroupName, nodeCount);
                             return nodeCount;
@@ -2360,20 +2330,15 @@ public class KubernetesMonitoringService {
                     event.getNamespace(), event.getClusterName());
 
             if (clusterInfo != null) {
-                List<K8sClusterDto.NodeGroup> nodeGroups = null;
-                if (clusterInfo.getSpiderViewK8sClusterDetail() != null) {
-                    nodeGroups = clusterInfo.getSpiderViewK8sClusterDetail().getNodeGroupList();
-                } else if (clusterInfo.getCspViewK8sClusterDetail() != null) {
-                    nodeGroups = clusterInfo.getCspViewK8sClusterDetail().getNodeGroupList();
-                }
+                List<K8sClusterDto.NodeGroup> nodeGroups = clusterInfo.getEffectiveNodeGroups();
 
-                if (nodeGroups != null) {
+                if (!nodeGroups.isEmpty()) {
                     for (K8sClusterDto.NodeGroup nodeGroup : nodeGroups) {
-                        String groupName = nodeGroup.getIid().getNameId();
+                        String groupName = nodeGroup.getEffectiveName();
                         if (event.getNodeGroupName().equals(groupName)) {
                             // 노드 목록에서 새로 생성된 노드 필터링
-                            List<K8sClusterDto.IID> allNodes = nodeGroup.getNodes();
-                            if (allNodes != null) {
+                            List<K8sClusterDto.IID> allNodes = nodeGroup.getEffectiveNodes();
+                            if (!allNodes.isEmpty()) {
                                 return filterNewlyCreatedNodes(allNodes, event);
                             }
                         }
