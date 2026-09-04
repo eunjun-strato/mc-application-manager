@@ -46,6 +46,7 @@ dependencies {
     implementation 'com.google.code.findbugs:jsr305:3.0.2'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'com.h2database:h2'
 
     implementation group: 'org.slf4j', name: 'slf4j-api'
     implementation group: 'org.apache.commons', name: 'commons-compress', version: '1.18'

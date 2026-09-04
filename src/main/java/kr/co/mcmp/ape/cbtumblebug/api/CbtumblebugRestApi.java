@@ -631,6 +631,17 @@ public class CbtumblebugRestApi {
         });
     }
 
+    public SshKeyResponse.SshKeyInfo getSshKey(String nsId, String keyId) {
+        if (keyId == null || !keyId.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
+            throw new IllegalArgumentException("Invalid VM SSH key ID");
+        }
+        return executeWithConnectionCheck("getSshKey", () -> {
+            String apiUrl = createApiUrl(String.format("/tumblebug/ns/%s/resources/sshKey/%s", nsId, keyId));
+            return restClient.request(apiUrl, createCommonHeaders(), null, HttpMethod.GET,
+                    new ParameterizedTypeReference<SshKeyResponse.SshKeyInfo>() { }).getBody();
+        });
+    }
+
     public List<SshKeyResponse.SshKeyInfo> getAllSshKeys(String nsId) {
         log.info("Fetching all SSH Keys in namespace: {}", nsId);
         return executeWithConnectionCheck("getAllSshKeys", () -> {

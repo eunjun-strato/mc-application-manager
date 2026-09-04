@@ -57,7 +57,10 @@ class ApplicationOrchestrationServiceProjectScopeTest {
                 List.<ApplicationOperationService>of(),
                 deploymentHistoryRepository,
                 operationHistoryRepository,
-                vmSecurityGroupExposureService);
+                vmSecurityGroupExposureService,
+                org.mockito.Mockito.mock(kr.co.mcmp.softwarecatalog.application.service.tunnel.ObjectStorageTunnelService.class),
+                org.mockito.Mockito.mock(kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService.class),
+                org.mockito.Mockito.mock(kr.co.mcmp.softwarecatalog.docker.service.DockerOperationService.class));
     }
 
     @Test

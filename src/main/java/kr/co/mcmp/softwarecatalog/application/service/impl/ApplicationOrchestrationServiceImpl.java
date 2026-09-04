@@ -35,6 +35,10 @@ import kr.co.mcmp.softwarecatalog.application.service.ApplicationOrchestrationSe
 import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
 import kr.co.mcmp.softwarecatalog.application.service.SpecValidationService;
 import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
+import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService;
+import kr.co.mcmp.softwarecatalog.application.service.tunnel.ObjectStorageTunnelService;
+import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
+import kr.co.mcmp.softwarecatalog.docker.service.DockerOperationService;
 import kr.co.mcmp.softwarecatalog.users.Entity.User;
 import kr.co.mcmp.softwarecatalog.users.service.UserService;
 import lombok.RequiredArgsConstructor;
@@ -58,6 +62,9 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final OperationHistoryRepository operationHistoryRepository;
     private final VmSecurityGroupExposureService vmSecurityGroupExposureService;
+    private final ObjectStorageTunnelService objectStorageTunnelService;
+    private final ObjectStorageAccessGrantService objectStorageAccessGrantService;
+    private final DockerOperationService dockerOperationService;
     
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -334,6 +341,9 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
                 log.info("ApplicationStatus deleted for deployment history ID: {}", deploymentHistoryId);
             }
             
+            if (applicationStatusOpt.isEmpty() && deploymentHistory.getDeploymentType() == DeploymentType.VM) {
+                cleanupVmDeployment(deploymentHistory);
+            }
             // 5. DeploymentHistory 상태 업데이트
             deploymentHistory.setStatus("DELETED");
             deploymentHistory.setUpdatedAt(LocalDateTime.now());
@@ -376,8 +386,11 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
             log.info("Deleting VM application - MCI: {}, VM: {}", 
                     applicationStatus.getMciId(), applicationStatus.getVmId());
 
-            vmSecurityGroupExposureService.releaseRestrictedInboundRule(deploymentHistory.getId());
-            // VM 컨테이너 삭제 로직은 DockerOperationService에서 처리
+            Map<String, Object> outcome = getOperationService(DeploymentType.VM)
+                    .performOperation(ActionType.UNINSTALL, applicationStatus.getId(), reason, username);
+            if (!Boolean.TRUE.equals(outcome.get("success"))) {
+                throw new IllegalStateException("VM uninstall did not complete; retry cleanup");
+            }
             
         } catch (Exception e) {
             log.error("Failed to delete VM application", e);
@@ -385,4 +398,14 @@ public class ApplicationOrchestrationServiceImpl implements ApplicationOrchestra
         }
     }
 
+    private void cleanupVmDeployment(DeploymentHistory history) {
+        objectStorageTunnelService.remove(history.getId());
+        objectStorageAccessGrantService.revoke(history.getId(), history.getVmId());
+        if (history.getContainerId() != null && !history.getContainerId().isBlank()) {
+            dockerOperationService.removeDockerContainer(
+                    new DockerTarget(history.getNamespace(), history.getMciId(), history.getVmId()),
+                    history.getContainerId());
+        }
+        vmSecurityGroupExposureService.releaseRestrictedInboundRule(history.getId());
+    }
 }

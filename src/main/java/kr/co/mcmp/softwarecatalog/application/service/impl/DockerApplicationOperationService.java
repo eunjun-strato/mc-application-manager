@@ -17,6 +17,7 @@ import kr.co.mcmp.softwarecatalog.application.repository.DeploymentHistoryReposi
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOperationService;
 import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService;
+import kr.co.mcmp.softwarecatalog.application.service.tunnel.ObjectStorageTunnelService;
 import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 import kr.co.mcmp.softwarecatalog.docker.service.DockerOperationService;
@@ -39,6 +40,7 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
     private final DockerOperationService dockerOperationService;
     private final ApplicationHistoryService applicationHistoryService;
     private final ObjectStorageAccessGrantService objectStorageAccessGrantService;
+    private final ObjectStorageTunnelService objectStorageTunnelService;
     private final VmSecurityGroupExposureService vmSecurityGroupExposureService;
     
     @Override
@@ -83,19 +85,24 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
                     result.put("status", status);
                     break;
                 case "stop":
+                    objectStorageTunnelService.suspend(target, containerId);
                     String stopResult = dockerOperationService.stopDockerContainer(target, containerId);
                     result.put("result", stopResult);
                     break;
                 case "start":
                     String startResult = dockerOperationService.startDockerContainer(target, containerId);
+                    objectStorageTunnelService.resume(target, containerId);
                     result.put("result", startResult);
                     break;
                 case "uninstall":
+                    objectStorageTunnelService.remove(target, containerId);
                     String removeResult = dockerOperationService.removeDockerContainer(target, containerId);
                     result.put("result", removeResult);
                     break;
                 case "restart":
+                    objectStorageTunnelService.suspend(target, containerId);
                     String restartResult = dockerOperationService.restartDockerContainer(target, containerId);
+                    objectStorageTunnelService.resume(target, containerId);
                     result.put("result", restartResult);
                     break;
                 case "isrunning":
@@ -178,6 +185,7 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
             return;
         }
 
+        objectStorageTunnelService.remove(deploymentHistory.getId());
         objectStorageAccessGrantService.revoke(deploymentHistory.getId(), applicationStatus.getVmId());
         vmSecurityGroupExposureService.releaseRestrictedInboundRule(deploymentHistory.getId());
         deploymentHistory.setStatus(ApplicationStatusValues.UNINSTALLED);

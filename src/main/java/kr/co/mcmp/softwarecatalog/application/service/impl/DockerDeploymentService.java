@@ -38,6 +38,7 @@ import kr.co.mcmp.softwarecatalog.application.repository.InfraSpecSnapshotReposi
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
 import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService;
+import kr.co.mcmp.softwarecatalog.application.service.tunnel.ObjectStorageTunnelService;
 import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService.IssuedAccess;
 import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.application.config.NexusConfig;
@@ -70,10 +71,9 @@ public class DockerDeploymentService implements DeploymentService {
     private final UserService userService;
     private final NexusConfig nexusConfig;
     private final ObjectStorageAccessGrantService objectStorageAccessGrantService;
+    private final ObjectStorageTunnelService objectStorageTunnelService;
     private final ObjectMapper objectMapper;
 
-    @Value("${app.object-storage.gateway-public-base-url:http://localhost:18084}")
-    private String objectStorageGatewayPublicBaseUrl;
     
     // 비동기 처리를 위한 스레드 풀
     private final Executor asyncExecutor = Executors.newFixedThreadPool(10);
@@ -434,9 +434,24 @@ public class DockerDeploymentService implements DeploymentService {
             if (containerId != null && !containerId.isEmpty()) {
                 boolean isRunning = dockerOperationService.isContainerRunning(dockerTarget, containerId);
                 if (isRunning) {
+                    history.setContainerId(containerId);
+                    history.setVmId(vmId);
+                    history.setPublicIp(vmAccessInfo.getPublicIP());
+                    deploymentHistoryRepository.save(history);
                     try {
+                        if (deployParams.getEnvironmentVariables() != null
+                                && deployParams.getEnvironmentVariables().containsKey("MCMP_OBJECT_STORAGE_TOKEN")) {
+                            objectStorageTunnelService.install(history.getId(), dockerTarget, containerId);
+                            applicationHistoryService.addDeploymentLog(history, LogType.INFO,
+                                    "Object Storage gateway setup completed for Jupyter.");
+                        }
                         vmSecurityGroupExposureService.addRestrictedInboundRule(request, vmAccessInfo, history);
                     } catch (RuntimeException exposureError) {
+                        try {
+                            objectStorageTunnelService.remove(history.getId());
+                        } catch (RuntimeException cleanupError) {
+                            exposureError.addSuppressed(cleanupError);
+                        }
                         try {
                             dockerOperationService.removeDockerContainer(dockerTarget, containerId);
                         } catch (RuntimeException rollbackError) {
@@ -472,6 +487,11 @@ public class DockerDeploymentService implements DeploymentService {
         } catch (Exception e) {
             log.error("Async deployment failed for VM: {}", vmId, e);
             objectStorageAccessGrantService.revoke(history.getId(), vmId);
+            try {
+                objectStorageTunnelService.remove(history.getId());
+            } catch (RuntimeException cleanupError) {
+                log.warn("Object Storage tunnel cleanup queued for deployment {}", history.getId());
+            }
             String errorMessage = e.getMessage();
             try {
                 vmSecurityGroupExposureService.releaseRestrictedInboundRule(history.getId());
@@ -569,16 +589,10 @@ public class DockerDeploymentService implements DeploymentService {
                 request.getNamespace(),
                 configuration);
 
-        String gatewayUrl = objectStorageGatewayPublicBaseUrl == null
-                ? ""
-                : objectStorageGatewayPublicBaseUrl.trim().replaceAll("/+$", "");
-        if (gatewayUrl.isBlank()) {
-            objectStorageAccessGrantService.revoke(history.getId(), vmId);
-            throw new IllegalArgumentException("Object Storage gateway public URL is not configured.");
-        }
+        String gatewayUrl = objectStorageTunnelService.gatewayUrl();
 
         Map<String, String> environment = new LinkedHashMap<>();
-        environment.put("MCMP_OBJECT_STORAGE_GATEWAY_URL", gatewayUrl + "/applications/object-storage-gateway");
+        environment.put("MCMP_OBJECT_STORAGE_GATEWAY_URL", gatewayUrl);
         environment.put("MCMP_OBJECT_STORAGE_TOKEN", issuedAccess.token());
         environment.put("JUPYTER_TOKEN", jupyterToken);
         environment.put("MCMP_OBJECT_STORAGE_NOTEBOOK_B64", Base64.getEncoder().encodeToString(
@@ -590,7 +604,8 @@ public class DockerDeploymentService implements DeploymentService {
                 "bash",
                 "-lc",
                 "set -e; "
-                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/ObjectStorage.ipynb; "
+                        + "if [ ! -e /home/jovyan/work/ObjectStorage.ipynb ]; then "
+                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/ObjectStorage.ipynb; fi; "
                         + "chmod 600 /home/jovyan/work/ObjectStorage.ipynb; "
                         + "exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\" "
                         + "--ServerApp.default_url=/lab/tree/ObjectStorage.ipynb"));
