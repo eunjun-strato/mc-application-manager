@@ -511,7 +511,12 @@ public class CbtumblebugRestApi {
                     .orElse(null);
     }
 
-
+    /*
+     * Disabled because there is currently no call site in AM and the corresponding
+     * CB-Tumblebug K8s command endpoint is not used by the active Helm deployment flow.
+     * The implementation is retained here for reference until its compatibility and
+     * future usage are decided.
+     *
     public String executeK8sClusterCommand(String nsId, String k8sClusterId, String k8sClusterNamespace,
             String k8sClusterPodName, String k8sClusterContainerName, String command) {
         log.info("Executing command on K8s Cluster: {}, Pod: {}, Container: {}", k8sClusterId, k8sClusterPodName,
@@ -580,6 +585,7 @@ public class CbtumblebugRestApi {
             }
         });
     }
+    */
 
     /**
      * K8S 노드 그룹의 오토스케일 크기를 변경합니다.

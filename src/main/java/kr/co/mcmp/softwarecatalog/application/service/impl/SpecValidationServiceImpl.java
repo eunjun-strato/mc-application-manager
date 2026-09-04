@@ -110,16 +110,7 @@ public class SpecValidationServiceImpl implements SpecValidationService {
                 throw new ApplicationException("Failed to retrieve K8s cluster info");
             }
 
-            // spiderViewK8sClusterDetail 우선 사용, 없으면 cspViewK8sClusterDetail 사용
-            K8sClusterDto.SpiderViewK8sClusterDetail spiderDetail = clusterInfo.getSpiderViewK8sClusterDetail();
-            K8sClusterDto.CspViewK8sClusterDetail cspDetail = clusterInfo.getCspViewK8sClusterDetail();
-            
-            List<K8sClusterDto.NodeGroup> nodeGroups = null;
-            if (spiderDetail != null) {
-                nodeGroups = spiderDetail.getNodeGroupList();
-            } else if (cspDetail != null) {
-                nodeGroups = cspDetail.getNodeGroupList();
-            }
+            List<K8sClusterDto.NodeGroup> nodeGroups = clusterInfo.getEffectiveNodeGroups();
 
             if (nodeGroups == null || nodeGroups.isEmpty()) {
                 log.warn("No node groups found for K8s cluster: {}. Using default spec for validation.", clusterName);
@@ -140,11 +131,12 @@ public class SpecValidationServiceImpl implements SpecValidationService {
             }
 
             K8sClusterDto.NodeGroup firstNodeGroup = nodeGroups.get(0);
-            if (StringUtils.isBlank(firstNodeGroup.getVmSpecName())) {
+            String vmSpecName = firstNodeGroup.getEffectiveVmSpecName();
+            if (StringUtils.isBlank(vmSpecName)) {
                 throw new ApplicationException("VM spec name is blank for the first node group");
             }
 
-            K8sSpec spec = cbtumblebugRestApi.lookupSpec(clusterInfo.getConnectionName(), firstNodeGroup.getVmSpecName());
+            K8sSpec spec = cbtumblebugRestApi.lookupSpec(clusterInfo.getConnectionName(), vmSpecName);
             log.info("Retrieved spec for K8s cluster: {}", spec);
             return spec;
         } catch (Exception e) {
@@ -294,5 +286,4 @@ public class SpecValidationServiceImpl implements SpecValidationService {
         }
     }
 }
-
 
