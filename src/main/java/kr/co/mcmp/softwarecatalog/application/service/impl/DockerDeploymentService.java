@@ -1001,94 +1001,16 @@ public class DockerDeploymentService implements DeploymentService {
         return nexusConfig.getImageUrlBySourceType(imageName, imageTag, "DOCKERHUB");
     }
 
-    private static final String JUPYTER_OBJECT_STORAGE_NOTEBOOK = """
-            {
-              "cells": [
-                {
-                  "cell_type": "markdown",
-                  "metadata": {},
-                  "source": [
-                    "# MCMP Object Storage\\n",
-                    "This notebook accesses Object Storage resources registered in Tumblebug. CSP credentials are never stored in this VM; short-lived presigned URLs are requested from Application Manager only when a file is transferred."
-                  ]
-                },
-                {
-                  "cell_type": "code",
-                  "execution_count": null,
-                  "metadata": {},
-                  "outputs": [],
-                  "source": [
-                    "import io\\n",
-                    "import os\\n",
-                    "from pathlib import Path\\n",
-                    "import pandas as pd\\n",
-                    "import requests\\n",
-                    "\\n",
-                    "gateway = os.environ['MCMP_OBJECT_STORAGE_GATEWAY_URL'].rstrip('/')\\n",
-                    "access_token = os.environ['MCMP_OBJECT_STORAGE_TOKEN']\\n",
-                    "auth_headers = {'Authorization': 'Bearer ' + access_token}\\n",
-                    "\\n",
-                    "def _mcmp(method, path, **kwargs):\\n",
-                    "    response = requests.request(method, gateway + path, headers=auth_headers, timeout=30, **kwargs)\\n",
-                    "    response.raise_for_status()\\n",
-                    "    payload = response.json()\\n",
-                    "    if payload.get('code') != 200:\\n",
-                    "        raise RuntimeError(payload.get('detail') or payload.get('message') or 'Application Manager request failed')\\n",
-                    "    return payload.get('data')\\n",
-                    "\\n",
-                    "def storages():\\n",
-                    "    return _mcmp('GET', '/storages')\\n",
-                    "\\n",
-                    "def list_objects(storage, prefix=''):\\n",
-                    "    data = _mcmp('GET', '/objects', params={'storage': storage, 'prefix': prefix})\\n",
-                    "    return pd.DataFrame(data.get('objects', []))\\n",
-                    "\\n",
-                    "def _presigned(storage, object_key, operation):\\n",
-                    "    return _mcmp('POST', '/presigned-url', json={'storage': storage, 'objectKey': object_key, 'operation': operation})\\n",
-                    "\\n",
-                    "def download(storage, object_key, destination=None):\\n",
-                    "    ticket = _presigned(storage, object_key, 'download')\\n",
-                    "    response = requests.request(ticket['method'], ticket['presignedURL'], headers=ticket.get('requiredHeaders') or {}, timeout=300)\\n",
-                    "    response.raise_for_status()\\n",
-                    "    if destination is None:\\n",
-                    "        return response.content\\n",
-                    "    Path(destination).write_bytes(response.content)\\n",
-                    "    return Path(destination)\\n",
-                    "\\n",
-                    "def upload(storage, source, object_key):\\n",
-                    "    ticket = _presigned(storage, object_key, 'upload')\\n",
-                    "    with Path(source).open('rb') as stream:\\n",
-                    "        response = requests.request(ticket['method'], ticket['presignedURL'], headers=ticket.get('requiredHeaders') or {}, data=stream, timeout=300)\\n",
-                    "    response.raise_for_status()\\n",
-                    "    return object_key\\n",
-                    "\\n",
-                    "def read_csv(storage, object_key, **kwargs):\\n",
-                    "    return pd.read_csv(io.BytesIO(download(storage, object_key)), **kwargs)\\n",
-                    "\\n",
-                    "storages()"
-                  ]
-                },
-                {
-                  "cell_type": "code",
-                  "execution_count": null,
-                  "metadata": {},
-                  "outputs": [],
-                  "source": [
-                    "# Use the alias shown by storages(). Granted prefixes are enforced by Application Manager.\\n",
-                    "# objects = list_objects('my-storage')\\n",
-                    "# dataframe = read_csv('my-storage', 'data/example.csv')\\n",
-                    "# upload('my-storage', 'result.csv', 'data/result.csv')  # READ_WRITE grants only"
-                  ]
-                }
-              ],
-              "metadata": {
-                "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-                "language_info": {"name": "python", "version": "3"}
-              },
-              "nbformat": 4,
-              "nbformat_minor": 5
-            }
-            """;
+    private static final String JUPYTER_OBJECT_STORAGE_NOTEBOOK = loadObjectStorageNotebook();
+
+    private static String loadObjectStorageNotebook() {
+        try (var input = new org.springframework.core.io.ClassPathResource(
+                "notebooks/object-storage.ipynb").getInputStream()) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Cannot load the Object Storage notebook template", e);
+        }
+    }
 
     static String jupyterObjectStorageNotebook() {
         return JUPYTER_OBJECT_STORAGE_NOTEBOOK;
