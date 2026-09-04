@@ -110,6 +110,63 @@ class DockerOperationServiceTest {
         assertThat(result.isSuccess()).isTrue();
     }
 
+    @Test
+    void addsJupyterEnvironmentVolumeAndCommandAsQuotedDockerArguments() {
+        when(commandExecutor.execute(eq(TARGET), anyString()))
+                .thenReturn(new DockerCommandResult(
+                        0, "__MCMP_CONTAINER_ID__=" + CONTAINER_ID, ""));
+
+        ContainerDeployResult result = service.runDockerContainer(
+                TARGET,
+                Map.of(
+                        "name", "jupyter-object-storage",
+                        "image", "quay.io/jupyter/scipy-notebook:2026-07-28",
+                        "portBindings", "8888:8888",
+                        "catalogId", "11",
+                        "deploymentId", "102"),
+                Map.of(
+                        "S3_BUCKET", "sample-bucket",
+                        "AWS_SECRET_ACCESS_KEY", "secret$(id)'value"),
+                "mcmp-jupyter-work:/home/jovyan/work",
+                List.of("bash", "-lc", "exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\""),
+                List.of(),
+                0);
+
+        assertThat(result.isSuccess()).isTrue();
+        ArgumentCaptor<String> script = ArgumentCaptor.forClass(String.class);
+        verify(commandExecutor).execute(eq(TARGET), script.capture());
+        assertThat(script.getValue())
+                .contains("'S3_BUCKET=sample-bucket'")
+                .contains("'mcmp-jupyter-work:/home/jovyan/work'")
+                .contains("'bash'")
+                .contains("'exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\"'")
+                .doesNotContain("-e AWS_SECRET_ACCESS_KEY=secret$(id)");
+    }
+
+    @Test
+    void rejectsInvalidRequestedEnvironmentAndVolume() {
+        ContainerDeployResult invalidEnvironment = service.runDockerContainer(
+                TARGET,
+                Map.of("name", "safe", "image", "nginx:1.27", "portBindings", "8080:80"),
+                Map.of("BAD-NAME", "value"),
+                null,
+                List.of(),
+                List.of(),
+                0);
+        ContainerDeployResult invalidVolume = service.runDockerContainer(
+                TARGET,
+                Map.of("name", "safe", "image", "nginx:1.27", "portBindings", "8080:80"),
+                Map.of(),
+                "../../host:/home/jovyan/work",
+                List.of(),
+                List.of(),
+                0);
+
+        assertThat(invalidEnvironment.isSuccess()).isFalse();
+        assertThat(invalidVolume.isSuccess()).isFalse();
+        verify(commandExecutor, never()).execute(eq(TARGET), anyString());
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
             "safe;touch-/tmp/pwned",

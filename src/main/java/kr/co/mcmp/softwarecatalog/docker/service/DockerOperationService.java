@@ -33,6 +33,9 @@ public class DockerOperationService {
             Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}");
     private static final Pattern CONTAINER_ID = Pattern.compile("[a-f0-9]{12,64}");
     private static final Pattern IP_ADDRESS = Pattern.compile("[A-Fa-f0-9:.]{2,64}");
+    private static final Pattern ENVIRONMENT_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
+    private static final Pattern VOLUME_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}");
+    private static final Pattern CONTAINER_PATH = Pattern.compile("/[A-Za-z0-9._/-]{0,254}");
     private static final Pattern CONTAINER_ID_MARKER =
             Pattern.compile("(?:^|\\n)__MCMP_CONTAINER_ID__=([a-f0-9]{12,64})(?:\\n|$)");
 
@@ -61,6 +64,18 @@ public class DockerOperationService {
             Map<String, String> deployParams,
             List<String> vmPublicIps,
             int vmIndex) {
+        return runDockerContainer(
+                target, deployParams, Map.of(), null, List.of(), vmPublicIps, vmIndex);
+    }
+
+    public ContainerDeployResult runDockerContainer(
+            DockerTarget target,
+            Map<String, String> deployParams,
+            Map<String, String> requestedEnvironmentVariables,
+            String volumeMounts,
+            List<String> commandArguments,
+            List<String> vmPublicIps,
+            int vmIndex) {
         try {
             if (deployParams == null) {
                 throw new IllegalArgumentException("Deployment parameters are required");
@@ -70,9 +85,18 @@ public class DockerOperationService {
             List<PortMapping> portMappings = parsePortBindings(deployParams.get("portBindings"));
             Map<String, String> environmentVariables =
                     getEnvironmentVariables(imageName, vmPublicIps, vmIndex, target.vmId());
+            environmentVariables.putAll(validateEnvironmentVariables(requestedEnvironmentVariables));
+            List<VolumeMount> parsedVolumeMounts = parseVolumeMounts(volumeMounts);
 
             String createCommand = buildCreateCommand(
-                    target, deployParams, imageName, containerName, portMappings, environmentVariables);
+                    target,
+                    deployParams,
+                    imageName,
+                    containerName,
+                    portMappings,
+                    environmentVariables,
+                    parsedVolumeMounts,
+                    commandArguments);
             String script = "if ! docker image inspect "
                     + DockerSshCommandExecutor.shellQuote(imageName)
                     + " >/dev/null 2>&1; then docker pull "
@@ -153,9 +177,19 @@ public class DockerOperationService {
     public String removeDockerContainer(DockerTarget target, String containerId) {
         String id = validateContainerId(containerId);
         String script = "if docker inspect --type container "
-                + DockerSshCommandExecutor.shellQuote(id) + " >/dev/null 2>&1; then "
-                + "docker rm -f -v " + DockerSshCommandExecutor.shellQuote(id)
-                + " >/dev/null; echo REMOVED; else echo ALREADY_REMOVED; fi";
+                + DockerSshCommandExecutor.shellQuote(id) + " >/dev/null 2>&1; then\n"
+                + "  mcmp_volumes=$(docker inspect --format "
+                + DockerSshCommandExecutor.shellQuote(
+                        "{{range .Mounts}}{{if eq .Type \"volume\"}}{{println .Name}}{{end}}{{end}}")
+                + " " + DockerSshCommandExecutor.shellQuote(id) + ")\n"
+                + "  docker rm -f -v " + DockerSshCommandExecutor.shellQuote(id) + " >/dev/null\n"
+                + "  for mcmp_volume in $mcmp_volumes; do\n"
+                + "    case \"$mcmp_volume\" in mcmp-*) docker volume rm \"$mcmp_volume\" >/dev/null 2>&1 || true ;; esac\n"
+                + "  done\n"
+                + "  echo REMOVED\n"
+                + "else\n"
+                + "  echo ALREADY_REMOVED\n"
+                + "fi";
         DockerCommandResult result = commandExecutor.execute(target, script);
         return result.stdout().contains("ALREADY_REMOVED")
                 ? "Container already removed"
@@ -199,7 +233,9 @@ public class DockerOperationService {
             String imageName,
             String containerName,
             List<PortMapping> portMappings,
-            Map<String, String> environmentVariables) {
+            Map<String, String> environmentVariables,
+            List<VolumeMount> volumeMounts,
+            List<String> commandArguments) {
         List<String> arguments = new ArrayList<>();
         arguments.add("docker");
         arguments.add("create");
@@ -226,13 +262,54 @@ public class DockerOperationService {
             arguments.add("-e");
             arguments.add(key + "=" + value);
         });
+        for (VolumeMount mount : volumeMounts) {
+            arguments.add("-v");
+            arguments.add(mount.volumeName() + ":" + mount.containerPath());
+        }
         arguments.add(imageName);
         if (Boolean.parseBoolean(deployParams.getOrDefault("debugKeepAlive", "false"))) {
             arguments.add("tail");
             arguments.add("-f");
             arguments.add("/dev/null");
+        } else if (commandArguments != null) {
+            arguments.addAll(commandArguments);
         }
         return shellCommand(arguments);
+    }
+
+    private Map<String, String> validateEnvironmentVariables(Map<String, String> requestedVariables) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (requestedVariables == null) {
+            return result;
+        }
+        requestedVariables.forEach((key, value) -> {
+            if (key == null || !ENVIRONMENT_NAME.matcher(key).matches()) {
+                throw new IllegalArgumentException("Invalid Docker environment variable name");
+            }
+            if (value == null) {
+                throw new IllegalArgumentException("Docker environment variable values cannot be null");
+            }
+            result.put(key, value);
+        });
+        return result;
+    }
+
+    private List<VolumeMount> parseVolumeMounts(String volumeMounts) {
+        List<VolumeMount> mounts = new ArrayList<>();
+        if (volumeMounts == null || volumeMounts.isBlank()) {
+            return mounts;
+        }
+        for (String rawMount : volumeMounts.split(",")) {
+            String[] parts = rawMount.trim().split(":", -1);
+            if (parts.length != 2
+                    || !VOLUME_NAME.matcher(parts[0]).matches()
+                    || !CONTAINER_PATH.matcher(parts[1]).matches()
+                    || parts[1].contains("..")) {
+                throw new IllegalArgumentException("Invalid Docker volume mount");
+            }
+            mounts.add(new VolumeMount(parts[0], parts[1]));
+        }
+        return mounts;
     }
 
     private void putNumericLabel(Map<String, String> labels, String key, String value) {
@@ -407,5 +484,8 @@ public class DockerOperationService {
     }
 
     private record PortMapping(int hostPort, int containerPort) {
+    }
+
+    private record VolumeMount(String volumeName, String containerPath) {
     }
 }

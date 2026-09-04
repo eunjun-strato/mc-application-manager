@@ -16,6 +16,9 @@ import kr.co.mcmp.softwarecatalog.application.repository.ApplicationStatusReposi
 import kr.co.mcmp.softwarecatalog.application.repository.DeploymentHistoryRepository;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationOperationService;
+import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService;
+import kr.co.mcmp.softwarecatalog.application.service.tunnel.ObjectStorageTunnelService;
+import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.docker.model.DockerTarget;
 import kr.co.mcmp.softwarecatalog.docker.service.DockerOperationService;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +39,9 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final DockerOperationService dockerOperationService;
     private final ApplicationHistoryService applicationHistoryService;
+    private final ObjectStorageAccessGrantService objectStorageAccessGrantService;
+    private final ObjectStorageTunnelService objectStorageTunnelService;
+    private final VmSecurityGroupExposureService vmSecurityGroupExposureService;
     
     @Override
     public Map<String, Object> performOperation(ActionType operation, Long applicationStatusId, String reason, String username) {
@@ -66,8 +72,8 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
                 if (ActionType.UNINSTALL.equals(operation)) {
                     result.put("result", "Container already removed");
                     result.put("success", true);
-                    applicationHistoryService.insertOperationHistory(applicationStatus, username, reason, "Docker operation: " + operation.name(), operation);
                     updateApplicationStatus(applicationStatus, operation, result, username);
+                    applicationHistoryService.insertOperationHistory(applicationStatus, username, reason, "Docker operation: " + operation.name(), operation);
                     return result;
                 }
                 throw new IllegalStateException("Container ID is not available for application status: " + applicationStatusId);
@@ -79,19 +85,24 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
                     result.put("status", status);
                     break;
                 case "stop":
+                    objectStorageTunnelService.suspend(target, containerId);
                     String stopResult = dockerOperationService.stopDockerContainer(target, containerId);
                     result.put("result", stopResult);
                     break;
                 case "start":
                     String startResult = dockerOperationService.startDockerContainer(target, containerId);
+                    objectStorageTunnelService.resume(target, containerId);
                     result.put("result", startResult);
                     break;
                 case "uninstall":
+                    objectStorageTunnelService.remove(target, containerId);
                     String removeResult = dockerOperationService.removeDockerContainer(target, containerId);
                     result.put("result", removeResult);
                     break;
                 case "restart":
+                    objectStorageTunnelService.suspend(target, containerId);
                     String restartResult = dockerOperationService.restartDockerContainer(target, containerId);
+                    objectStorageTunnelService.resume(target, containerId);
                     result.put("result", restartResult);
                     break;
                 case "isrunning":
@@ -103,8 +114,8 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
             }
 
             result.put("success", true);
-            applicationHistoryService.insertOperationHistory(applicationStatus, username, reason, "Docker operation: " + operation.name(), operation);
             updateApplicationStatus(applicationStatus, operation, result, username);
+            applicationHistoryService.insertOperationHistory(applicationStatus, username, reason, "Docker operation: " + operation.name(), operation);
     
         } catch (Exception e) {
             log.error("Error performing Docker operation: {} on application status: {}", operation, applicationStatusId, e);
@@ -174,6 +185,9 @@ public class DockerApplicationOperationService implements ApplicationOperationSe
             return;
         }
 
+        objectStorageTunnelService.remove(deploymentHistory.getId());
+        objectStorageAccessGrantService.revoke(deploymentHistory.getId(), applicationStatus.getVmId());
+        vmSecurityGroupExposureService.releaseRestrictedInboundRule(deploymentHistory.getId());
         deploymentHistory.setStatus(ApplicationStatusValues.UNINSTALLED);
         deploymentHistory.setUpdatedAt(java.time.LocalDateTime.now());
         deploymentHistoryRepository.save(deploymentHistory);

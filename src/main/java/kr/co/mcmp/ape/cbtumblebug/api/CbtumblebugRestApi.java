@@ -1,5 +1,6 @@
 package kr.co.mcmp.ape.cbtumblebug.api;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Collections;
@@ -16,6 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
+import org.springframework.web.util.UriUtils;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -29,6 +31,10 @@ import kr.co.mcmp.ape.cbtumblebug.dto.MciDto;
 import kr.co.mcmp.ape.cbtumblebug.dto.MciResponse;
 import kr.co.mcmp.ape.cbtumblebug.dto.NamespaceDto;
 import kr.co.mcmp.ape.cbtumblebug.dto.NamespaceResponse;
+import kr.co.mcmp.ape.cbtumblebug.dto.ObjectStorageInfo;
+import kr.co.mcmp.ape.cbtumblebug.dto.ObjectStorageListObjectsResponse;
+import kr.co.mcmp.ape.cbtumblebug.dto.ObjectStorageListResponse;
+import kr.co.mcmp.ape.cbtumblebug.dto.ObjectStoragePresignedUrlResponse;
 import kr.co.mcmp.ape.cbtumblebug.dto.MciAccessInfoDto;
 import kr.co.mcmp.ape.cbtumblebug.dto.MciCommandResult;
 import kr.co.mcmp.ape.cbtumblebug.dto.Spec;
@@ -445,6 +451,158 @@ public class CbtumblebugRestApi {
         });
     }
 
+    /**
+     * Adds one restricted inbound TCP rule without resubmitting the Security
+     * Group's existing rules. In particular, existing ALL protocol rules must
+     * not be copied into this request because CB-Tumblebug's full update path
+     * can reject them during port validation.
+     */
+    public String addInboundTcpFirewallRule(
+            String nsId,
+            String securityGroupId,
+            int port,
+            String cidr) {
+        return executeWithConnectionCheck("addInboundTcpFirewallRule", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/securityGroup/%s/rules",
+                    nsId,
+                    securityGroupId));
+            HttpHeaders headers = createCommonHeaders();
+
+            Map<String, Object> firewallRule = new HashMap<>();
+            firewallRule.put("Direction", "inbound");
+            firewallRule.put("Protocol", "TCP");
+            firewallRule.put("CIDR", cidr);
+            firewallRule.put("Ports", String.valueOf(port));
+
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("firewallRules", List.of(firewallRule));
+
+            try {
+                String jsonBody = new ObjectMapper().writeValueAsString(requestBody);
+                ResponseEntity<String> response = restClient.request(
+                        apiUrl,
+                        headers,
+                        jsonBody,
+                        HttpMethod.POST,
+                        new ParameterizedTypeReference<String>() {
+                        });
+                return requireSuccessfulFirewallRuleMutation(response.getBody(), "add");
+            } catch (JsonProcessingException e) {
+                throw new CbtumblebugException("Failed to serialize firewall rule request: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Checks whether the exact inbound TCP rule already exists. Application
+     * Manager uses this before adding a rule so an operator-owned rule is never
+     * mistaken for an application-owned rule during uninstall.
+     */
+    public boolean hasInboundTcpFirewallRule(
+            String nsId,
+            String securityGroupId,
+            int port,
+            String cidr) {
+        return executeWithConnectionCheck("hasInboundTcpFirewallRule", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/securityGroup/%s",
+                    nsId,
+                    securityGroupId));
+            HttpHeaders headers = createCommonHeaders();
+            ResponseEntity<String> response = restClient.request(
+                    apiUrl,
+                    headers,
+                    null,
+                    HttpMethod.GET,
+                    new ParameterizedTypeReference<String>() {
+                    });
+
+            try {
+                JsonNode root = new ObjectMapper().readTree(response.getBody());
+                JsonNode rules = root.path("firewallRules");
+                if (!rules.isArray()) {
+                    throw new CbtumblebugException("Security Group response does not contain firewallRules");
+                }
+
+                String expectedPort = String.valueOf(port);
+                for (JsonNode rule : rules) {
+                    String actualPort = rule.hasNonNull("Port")
+                            ? rule.path("Port").asText()
+                            : rule.path("Ports").asText();
+                    if ("inbound".equalsIgnoreCase(rule.path("Direction").asText())
+                            && "TCP".equalsIgnoreCase(rule.path("Protocol").asText())
+                            && cidr.equals(rule.path("CIDR").asText())
+                            && expectedPort.equals(actualPort)) {
+                        return true;
+                    }
+                }
+                return false;
+            } catch (JsonProcessingException | IllegalArgumentException e) {
+                throw new CbtumblebugException("Failed to inspect Security Group rules: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Deletes only the exact inbound TCP rule. This endpoint preserves every
+     * other rule, including provider-created ALL protocol rules.
+     */
+    public String deleteInboundTcpFirewallRule(
+            String nsId,
+            String securityGroupId,
+            int port,
+            String cidr) {
+        return executeWithConnectionCheck("deleteInboundTcpFirewallRule", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/securityGroup/%s/rules",
+                    nsId,
+                    securityGroupId));
+            HttpHeaders headers = createCommonHeaders();
+
+            Map<String, Object> firewallRule = new HashMap<>();
+            firewallRule.put("Direction", "inbound");
+            firewallRule.put("Protocol", "TCP");
+            firewallRule.put("CIDR", cidr);
+            firewallRule.put("Ports", String.valueOf(port));
+
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("firewallRules", List.of(firewallRule));
+
+            try {
+                String jsonBody = new ObjectMapper().writeValueAsString(requestBody);
+                ResponseEntity<String> response = restClient.request(
+                        apiUrl,
+                        headers,
+                        jsonBody,
+                        HttpMethod.DELETE,
+                        new ParameterizedTypeReference<String>() {
+                        });
+                return requireSuccessfulFirewallRuleMutation(response.getBody(), "delete");
+            } catch (JsonProcessingException e) {
+                throw new CbtumblebugException("Failed to serialize firewall rule deletion request: " + e.getMessage());
+            }
+        });
+    }
+
+    private String requireSuccessfulFirewallRuleMutation(String responseBody, String operation) {
+        if (responseBody == null || responseBody.isBlank()) {
+            throw new CbtumblebugException("Tumblebug returned an empty response while trying to "
+                    + operation + " a firewall rule");
+        }
+        try {
+            JsonNode root = new ObjectMapper().readTree(responseBody);
+            if (root.has("success") && !root.path("success").asBoolean()) {
+                String message = root.path("message").asText("unknown error");
+                throw new CbtumblebugException("Tumblebug failed to " + operation
+                        + " the firewall rule: " + message);
+            }
+            return responseBody;
+        } catch (JsonProcessingException e) {
+            throw new CbtumblebugException("Failed to parse firewall rule response: " + e.getMessage());
+        }
+    }
+
     public VmSpecDto lookupVmSpec(String connectionName, String vmSpecName) {
         log.info("Fetching VM Spec info for connection: {}, specName: {}", connectionName, vmSpecName);
         return executeWithConnectionCheck("lookupVmSpec", () -> {
@@ -473,6 +631,17 @@ public class CbtumblebugRestApi {
         });
     }
 
+    public SshKeyResponse.SshKeyInfo getSshKey(String nsId, String keyId) {
+        if (keyId == null || !keyId.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
+            throw new IllegalArgumentException("Invalid VM SSH key ID");
+        }
+        return executeWithConnectionCheck("getSshKey", () -> {
+            String apiUrl = createApiUrl(String.format("/tumblebug/ns/%s/resources/sshKey/%s", nsId, keyId));
+            return restClient.request(apiUrl, createCommonHeaders(), null, HttpMethod.GET,
+                    new ParameterizedTypeReference<SshKeyResponse.SshKeyInfo>() { }).getBody();
+        });
+    }
+
     public List<SshKeyResponse.SshKeyInfo> getAllSshKeys(String nsId) {
         log.info("Fetching all SSH Keys in namespace: {}", nsId);
         return executeWithConnectionCheck("getAllSshKeys", () -> {
@@ -489,6 +658,123 @@ public class CbtumblebugRestApi {
 
             return response.getBody() != null ? response.getBody().getSshKey() : Collections.emptyList();
         });
+    }
+
+    public List<ObjectStorageInfo> getObjectStorages(String nsId) {
+        log.info("Fetching Object Storage resources in namespace: {}", nsId);
+        return executeWithConnectionCheck("getObjectStorages", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/objectStorage",
+                    encodePathSegment(nsId)));
+            ResponseEntity<ObjectStorageListResponse> response = restClient.request(
+                    apiUrl,
+                    createCommonHeaders(),
+                    null,
+                    HttpMethod.GET,
+                    new ParameterizedTypeReference<ObjectStorageListResponse>() {
+                    });
+            return response.getBody() != null
+                    ? response.getBody().getObjectStorage()
+                    : Collections.emptyList();
+        });
+    }
+
+    public ObjectStorageInfo getObjectStorage(String nsId, String objectStorageId) {
+        log.info("Fetching Object Storage resource: namespace={}, id={}", nsId, objectStorageId);
+        return executeWithConnectionCheck("getObjectStorage", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/objectStorage/%s",
+                    encodePathSegment(nsId),
+                    encodePathSegment(objectStorageId)));
+            ResponseEntity<ObjectStorageInfo> response = restClient.request(
+                    apiUrl,
+                    createCommonHeaders(),
+                    null,
+                    HttpMethod.GET,
+                    new ParameterizedTypeReference<ObjectStorageInfo>() {
+                    });
+            return response.getBody();
+        });
+    }
+
+    public ObjectStorageListObjectsResponse listObjectStorageObjects(
+            String nsId,
+            String objectStorageId,
+            String credentialHolder) {
+        log.info("Listing objects: namespace={}, objectStorageId={}", nsId, objectStorageId);
+        return executeWithConnectionCheck("listObjectStorageObjects", () -> {
+            String apiUrl = createApiUrl(String.format(
+                    "/tumblebug/ns/%s/resources/objectStorage/%s/object",
+                    encodePathSegment(nsId),
+                    encodePathSegment(objectStorageId)));
+            ResponseEntity<ObjectStorageListObjectsResponse> response = restClient.request(
+                    apiUrl,
+                    createObjectStorageHeaders(credentialHolder),
+                    null,
+                    HttpMethod.GET,
+                    new ParameterizedTypeReference<ObjectStorageListObjectsResponse>() {
+                    });
+            return response.getBody() != null
+                    ? response.getBody()
+                    : ObjectStorageListObjectsResponse.builder().build();
+        });
+    }
+
+    public ObjectStoragePresignedUrlResponse generateObjectStoragePresignedUrl(
+            String nsId,
+            String objectStorageId,
+            String objectKey,
+            String operation,
+            int expiresSeconds,
+            String credentialHolder) {
+        log.info(
+                "Generating Object Storage presigned URL: namespace={}, objectStorageId={}, operation={}",
+                nsId,
+                objectStorageId,
+                operation);
+        return executeWithConnectionCheck("generateObjectStoragePresignedUrl", () -> {
+            URI apiUri = UriComponentsBuilder.fromHttpUrl(createApiUrl("/tumblebug"))
+                    .pathSegment(
+                            "ns",
+                            nsId,
+                            "resources",
+                            "objectStorage",
+                            objectStorageId,
+                            "object",
+                            objectKey,
+                            "presignedUrl")
+                    .queryParam("operation", operation)
+                    .queryParam("expires", expiresSeconds)
+                    .build()
+                    .encode()
+                    .toUri();
+            ResponseEntity<ObjectStoragePresignedUrlResponse> response = restClient.request(
+                    apiUri,
+                    createObjectStorageHeaders(credentialHolder),
+                    null,
+                    HttpMethod.POST,
+                    new ParameterizedTypeReference<ObjectStoragePresignedUrlResponse>() {
+                    });
+            if (response.getBody() == null) {
+                throw new CbtumblebugException("Tumblebug returned an empty presigned URL response");
+            }
+            return response.getBody();
+        });
+    }
+
+    private HttpHeaders createObjectStorageHeaders(String credentialHolder) {
+        HttpHeaders headers = createCommonHeaders();
+        if (credentialHolder != null && !credentialHolder.isBlank()) {
+            headers.set("x-credential-holder", credentialHolder);
+        }
+        return headers;
+    }
+
+    private String encodePathSegment(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Tumblebug path parameter is required");
+        }
+        return UriUtils.encodePathSegment(value, StandardCharsets.UTF_8);
     }
 
     /**

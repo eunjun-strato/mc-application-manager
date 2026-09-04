@@ -47,6 +47,17 @@ public class DeploymentRequest {
      * 서비스 포트
      */
     private Integer servicePort;
+
+    /**
+     * Tumblebug Security Group에 서비스 포트를 제한적으로 공개할지 여부.
+     * 기본값(null/false)은 Security Group을 변경하지 않는다.
+     */
+    private Boolean openServicePort;
+
+    /**
+     * 서비스 포트를 허용할 IPv4 CIDR. Public any(0.0.0.0/0)는 허용하지 않는다.
+     */
+    private String servicePortCidr;
     
     /**
      * 사용자명

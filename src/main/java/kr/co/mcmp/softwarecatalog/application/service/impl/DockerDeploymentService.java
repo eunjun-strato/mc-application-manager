@@ -1,8 +1,11 @@
 package kr.co.mcmp.softwarecatalog.application.service.impl;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -10,7 +13,10 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import kr.co.mcmp.ape.cbtumblebug.api.CbtumblebugRestApi;
 import kr.co.mcmp.ape.cbtumblebug.dto.VmAccessInfo;
@@ -23,6 +29,7 @@ import kr.co.mcmp.softwarecatalog.application.constants.LogType;
 import kr.co.mcmp.softwarecatalog.application.constants.VmDeploymentMode;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentParameters;
 import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest;
+import kr.co.mcmp.softwarecatalog.application.dto.ObjectStorageConfiguration;
 import kr.co.mcmp.softwarecatalog.application.exception.ApplicationException;
 import kr.co.mcmp.softwarecatalog.application.model.DeploymentHistory;
 import kr.co.mcmp.softwarecatalog.application.model.InfraSpecSnapshot;
@@ -30,6 +37,10 @@ import kr.co.mcmp.softwarecatalog.application.repository.DeploymentHistoryReposi
 import kr.co.mcmp.softwarecatalog.application.repository.InfraSpecSnapshotRepository;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationHistoryService;
 import kr.co.mcmp.softwarecatalog.application.service.DeploymentService;
+import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService;
+import kr.co.mcmp.softwarecatalog.application.service.tunnel.ObjectStorageTunnelService;
+import kr.co.mcmp.softwarecatalog.application.service.ObjectStorageAccessGrantService.IssuedAccess;
+import kr.co.mcmp.softwarecatalog.application.service.VmSecurityGroupExposureService;
 import kr.co.mcmp.softwarecatalog.application.config.NexusConfig;
 import kr.co.mcmp.softwarecatalog.docker.model.ContainerDeployResult;
 import kr.co.mcmp.softwarecatalog.docker.model.DockerHostResourceInfo;
@@ -53,11 +64,16 @@ public class DockerDeploymentService implements DeploymentService {
     private final DockerSetupService dockerSetupService;
     private final DockerOperationService dockerOperationService;
     private final CbtumblebugRestApi cbtumblebugRestApi;
+    private final VmSecurityGroupExposureService vmSecurityGroupExposureService;
     private final ApplicationHistoryService applicationHistoryService;
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final InfraSpecSnapshotRepository infraSpecSnapshotRepository;
     private final UserService userService;
     private final NexusConfig nexusConfig;
+    private final ObjectStorageAccessGrantService objectStorageAccessGrantService;
+    private final ObjectStorageTunnelService objectStorageTunnelService;
+    private final ObjectMapper objectMapper;
+
     
     // 비동기 처리를 위한 스레드 풀
     private final Executor asyncExecutor = Executors.newFixedThreadPool(10);
@@ -379,7 +395,8 @@ public class DockerDeploymentService implements DeploymentService {
             dockerSetupService.checkAndInstallDocker(request.getNamespace(), request.getMciId(), vmId);
             
             // 배포 파라미터 생성
-            DeploymentParameters deployParams = createDeployParameters(request, catalog, vmIndex, vmIds, clusterConfig);
+            DeploymentParameters deployParams = createDeployParameters(
+                    request, catalog, history, vmId, vmIndex, vmIds, clusterConfig);
             VmAccessInfo vmAccessInfo = cbtumblebugRestApi.getVmInfo(request.getNamespace(), request.getMciId(), vmId);
             applicationHistoryService.createApplicationStatusForVm(
                     history,
@@ -406,6 +423,9 @@ public class DockerDeploymentService implements DeploymentService {
             ContainerDeployResult deployResult = dockerOperationService.runDockerContainer(
                 dockerTarget,
                 convertToMap(deployParams, catalog.getId(), history.getId()),
+                deployParams.getEnvironmentVariables(),
+                deployParams.getVolumeMounts(),
+                deployParams.getCommandArguments(),
                 vmPublicIps,
                 vmIndex
             );
@@ -417,6 +437,36 @@ public class DockerDeploymentService implements DeploymentService {
                     history.setContainerId(containerId);
                     history.setVmId(vmId);
                     history.setPublicIp(vmAccessInfo.getPublicIP());
+                    deploymentHistoryRepository.save(history);
+                    try {
+                        if (deployParams.getEnvironmentVariables() != null
+                                && deployParams.getEnvironmentVariables().containsKey("MCMP_OBJECT_STORAGE_TOKEN")) {
+                            objectStorageTunnelService.install(history.getId(), dockerTarget, containerId);
+                            applicationHistoryService.addDeploymentLog(history, LogType.INFO,
+                                    "Object Storage gateway setup completed for Jupyter.");
+                        }
+                        vmSecurityGroupExposureService.addRestrictedInboundRule(request, vmAccessInfo, history);
+                    } catch (RuntimeException exposureError) {
+                        try {
+                            objectStorageTunnelService.remove(history.getId());
+                        } catch (RuntimeException cleanupError) {
+                            exposureError.addSuppressed(cleanupError);
+                        }
+                        try {
+                            dockerOperationService.removeDockerContainer(dockerTarget, containerId);
+                        } catch (RuntimeException rollbackError) {
+                            exposureError.addSuppressed(rollbackError);
+                            log.warn(
+                                    "Failed to remove container {} after network exposure failure on VM {}",
+                                    containerId,
+                                    vmId,
+                                    rollbackError);
+                        }
+                        throw exposureError;
+                    }
+                    history.setContainerId(containerId);
+                    history.setVmId(vmId);
+                    history.setPublicIp(vmAccessInfo.getPublicIP());
                     history.setUpdatedAt(LocalDateTime.now());
                     deploymentHistoryRepository.save(history);
                     log.info("Async deployment successful for VM: {} with container: {}", vmId, containerId);
@@ -424,17 +474,34 @@ public class DockerDeploymentService implements DeploymentService {
                 } else {
                     String errorMsg = "Container is not running";
                     log.error("Async deployment failed for VM: {} - {}", vmId, errorMsg);
+                    objectStorageAccessGrantService.revoke(history.getId(), vmId);
                     return new DeploymentResult(vmId, false, null, errorMsg);
                 }
             } else {
                 String errorMsg = "Could not retrieve container ID";
                 log.error("Async deployment failed for VM: {} - {}", vmId, errorMsg);
+                objectStorageAccessGrantService.revoke(history.getId(), vmId);
                 return new DeploymentResult(vmId, false, null, errorMsg);
             }
             
         } catch (Exception e) {
             log.error("Async deployment failed for VM: {}", vmId, e);
-            return new DeploymentResult(vmId, false, null, e.getMessage());
+            objectStorageAccessGrantService.revoke(history.getId(), vmId);
+            try {
+                objectStorageTunnelService.remove(history.getId());
+            } catch (RuntimeException cleanupError) {
+                log.warn("Object Storage tunnel cleanup queued for deployment {}", history.getId());
+            }
+            String errorMessage = e.getMessage();
+            try {
+                vmSecurityGroupExposureService.releaseRestrictedInboundRule(history.getId());
+            } catch (RuntimeException cleanupError) {
+                e.addSuppressed(cleanupError);
+                errorMessage = errorMessage + "; failed to roll back inbound rule: " + cleanupError.getMessage();
+                log.error("Failed to roll back VM Security Group exposure for deploymentId={}",
+                        history.getId(), cleanupError);
+            }
+            return new DeploymentResult(vmId, false, null, errorMessage);
         }
     }
     
@@ -465,8 +532,14 @@ public class DockerDeploymentService implements DeploymentService {
     /**
      * 통합 배포 파라미터 생성기 - 모든 배포 타입을 하나의 메서드로 처리
      */
-    private DeploymentParameters createDeployParameters(DeploymentRequest request, SoftwareCatalogDTO catalog,
-                                                      int vmIndex, List<String> vmIds, Map<String, String> clusterConfig) {
+    private DeploymentParameters createDeployParameters(
+            DeploymentRequest request,
+            SoftwareCatalogDTO catalog,
+            DeploymentHistory history,
+            String vmId,
+            int vmIndex,
+            List<String> vmIds,
+            Map<String, String> clusterConfig) {
         validateCatalog(catalog);
         
         String imageUrl = buildImageUrl(catalog);
@@ -474,14 +547,90 @@ public class DockerDeploymentService implements DeploymentService {
         // 컨테이너명과 포트 설정 생성
         ContainerConfig containerConfig = createContainerConfig(request, catalog, vmIndex, vmIds, clusterConfig);
         
-        return DeploymentParameters.builder()
+        DeploymentParameters parameters = DeploymentParameters.builder()
                 .name(containerConfig.name)
                 .image(imageUrl)
                 .portBindings(containerConfig.portBindings)
                 .debugKeepAlive(Boolean.TRUE.equals(request.getDebugKeepAlive()))
                 .build();
+
+        configureJupyterObjectStorage(parameters, request, catalog, history, vmId);
+        return parameters;
     }
-    
+
+    private void configureJupyterObjectStorage(
+            DeploymentParameters parameters,
+            DeploymentRequest request,
+            SoftwareCatalogDTO catalog,
+            DeploymentHistory history,
+            String vmId) {
+        String packageName = catalog.getPackageInfo().getPackageName();
+        if (packageName == null || !packageName.toLowerCase().contains("jupyter")) {
+            return;
+        }
+
+        Map<String, Object> objectStorage = nestedMap(request.getAdditionalConfig(), "objectStorage");
+        if (!Boolean.TRUE.equals(objectStorage.get("enabled"))) {
+            throw new IllegalArgumentException("Object Storage configuration is required for JupyterLab.");
+        }
+
+        String jupyterToken = requiredString(
+                objectStorage, "jupyterToken", "A Jupyter access token is required.");
+        if (jupyterToken.length() < 12) {
+            throw new IllegalArgumentException("The Jupyter access token must be at least 12 characters.");
+        }
+
+        ObjectStorageConfiguration configuration = objectMapper.convertValue(
+                objectStorage,
+                ObjectStorageConfiguration.class);
+        IssuedAccess issuedAccess = objectStorageAccessGrantService.issue(
+                history.getId(),
+                vmId,
+                request.getNamespace(),
+                configuration);
+
+        String gatewayUrl = objectStorageTunnelService.gatewayUrl();
+
+        Map<String, String> environment = new LinkedHashMap<>();
+        environment.put("MCMP_OBJECT_STORAGE_GATEWAY_URL", gatewayUrl);
+        environment.put("MCMP_OBJECT_STORAGE_TOKEN", issuedAccess.token());
+        environment.put("JUPYTER_TOKEN", jupyterToken);
+        environment.put("MCMP_OBJECT_STORAGE_NOTEBOOK_B64", Base64.getEncoder().encodeToString(
+                JUPYTER_OBJECT_STORAGE_NOTEBOOK.getBytes(StandardCharsets.UTF_8)));
+
+        parameters.setEnvironmentVariables(environment);
+        parameters.setVolumeMounts("mcmp-" + parameters.getName() + "-work:/home/jovyan/work");
+        parameters.setCommandArguments(List.of(
+                "bash",
+                "-lc",
+                "set -e; "
+                        + "if [ ! -e /home/jovyan/work/ObjectStorage.ipynb ]; then "
+                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/ObjectStorage.ipynb; fi; "
+                        + "chmod 600 /home/jovyan/work/ObjectStorage.ipynb; "
+                        + "exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\" "
+                        + "--ServerApp.default_url=/lab/tree/ObjectStorage.ipynb"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> nestedMap(Map<String, Object> parent, String key) {
+        if (parent == null || !(parent.get(key) instanceof Map<?, ?> value)) {
+            return Map.of();
+        }
+        return (Map<String, Object>) value;
+    }
+
+    private String requiredString(Map<String, Object> values, String key, String message) {
+        String value = stringValue(values.get(key));
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(message);
+        }
+        return value;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
     /**
      * 카탈로그 유효성을 검증합니다.
      */
@@ -855,8 +1004,31 @@ public class DockerDeploymentService implements DeploymentService {
         String imageName = catalog.getPackageInfo().getPackageName().toLowerCase();
         String imageTag = catalog.getPackageInfo().getPackageVersion().toLowerCase();
 
-        // 항상 Docker Hub URL 사용
+        String firstPathSegment = imageName.contains("/")
+                ? imageName.substring(0, imageName.indexOf('/'))
+                : imageName;
+        if (firstPathSegment.contains(".")
+                || firstPathSegment.contains(":")
+                || "localhost".equals(firstPathSegment)) {
+            return imageName + ":" + imageTag;
+        }
+
         return nexusConfig.getImageUrlBySourceType(imageName, imageTag, "DOCKERHUB");
+    }
+
+    private static final String JUPYTER_OBJECT_STORAGE_NOTEBOOK = loadObjectStorageNotebook();
+
+    private static String loadObjectStorageNotebook() {
+        try (var input = new org.springframework.core.io.ClassPathResource(
+                "notebooks/object-storage.ipynb").getInputStream()) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Cannot load the Object Storage notebook template", e);
+        }
+    }
+
+    static String jupyterObjectStorageNotebook() {
+        return JUPYTER_OBJECT_STORAGE_NOTEBOOK;
     }
     
     private Map<String, String> convertToMap(

@@ -24,7 +24,7 @@ FROM openjdk:17.0.1-jdk-slim
 
 # Install curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl && \
+    curl openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy binaries from builder

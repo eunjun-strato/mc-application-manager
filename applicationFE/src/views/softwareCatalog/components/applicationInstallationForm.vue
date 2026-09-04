@@ -210,8 +210,31 @@
             <!-- VM :: Service Port -->
             <div class="mb-3">
               <label class="form-label">Port</label>
-              <p class="text-muted">Please enter a port accessible from the outside</p>
+              <p class="text-muted">Docker host port. Security Group access is configured separately below.</p>
               <input type="number"  class="form-control" placeholder="8080"  v-model="inputServicePort">
+            </div>
+
+            <div class="mb-3" v-if="modalTitle == 'Application Installation'">
+              <label class="form-label">Network Exposure</label>
+              <select class="form-select" v-model="vmNetworkExposureMode">
+                <option value="PRIVATE">Do not change Security Group (recommended)</option>
+                <option value="RESTRICTED">Add restricted direct access</option>
+              </select>
+              <p class="text-muted mt-1 mb-0">
+                Direct access appends one inbound TCP rule through Tumblebug. It never resaves existing rules.
+              </p>
+
+              <div class="mt-2" v-if="vmNetworkExposureMode === 'RESTRICTED'">
+                <label class="form-label required">Allowed IPv4 CIDR</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  placeholder="203.0.113.10/32"
+                  v-model.trim="servicePortCidr">
+                <p class="text-warning mt-1 mb-0">
+                  Public any (0.0.0.0/0) is rejected. Broader rules already present in the Security Group are not removed.
+                </p>
+              </div>
             </div>
 
             <div class="mb-3" v-if="modalTitle == 'Application Installation'">
@@ -221,6 +244,87 @@
                 <option value="CPU_INTENSIVE">CPU Intensive</option>
                 <option value="MEMORY_INTENSIVE">Memory Intensive</option>
               </select>
+            </div>
+
+            <div class="mb-3" v-if="modalTitle == 'Application Installation' && showObjectStorageConfig">
+              <label class="form-label">Object Storage Configuration</label>
+              <p class="text-muted">
+                Select Object Storage resources already registered in Tumblebug. CSP access keys are not sent to JupyterLab.
+              </p>
+
+              <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" id="vmObjectStorageEnabled"
+                  v-model="objectStorageData.enabled" :disabled="objectStorageRequired">
+                <label class="form-check-label" for="vmObjectStorageEnabled">Enable Object Storage</label>
+              </div>
+
+              <div v-if="objectStorageData.enabled">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                  <label class="form-label mb-0 required">Registered Object Storage</label>
+                  <button type="button" class="btn btn-sm btn-outline-secondary"
+                    :disabled="registeredObjectStorageLoading" @click="fetchRegisteredObjectStorages">
+                    Refresh
+                  </button>
+                </div>
+
+                <div class="text-muted" v-if="registeredObjectStorageLoading">Loading Object Storage resources...</div>
+                <div class="alert alert-danger py-2" v-else-if="registeredObjectStorageLoadError">
+                  Object Storage resources could not be loaded from Tumblebug.
+                </div>
+                <div class="alert alert-warning py-2" v-else-if="registeredObjectStorageList.length === 0">
+                  No Object Storage resource is registered in this namespace.
+                </div>
+                <div class="border rounded p-2" v-else>
+                  <div class="form-check" v-for="storage in registeredObjectStorageList" :key="storage.id">
+                    <input class="form-check-input" type="checkbox"
+                      :id="`vm-object-storage-${storage.id}`"
+                      :value="storage.id"
+                      :disabled="String(storage.status || '').toLowerCase() !== 'available'"
+                      v-model="objectStorageData.selectedStorageIds">
+                    <label class="form-check-label" :for="`vm-object-storage-${storage.id}`">
+                      {{ storage.name || storage.id }}
+                      <span class="text-muted">
+                        ({{ storage.provider || 'unknown CSP' }}{{ storage.region ? ` / ${storage.region}` : '' }} / {{ storage.status || 'unknown' }})
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="d-flex justify-content-between mt-2">
+                  <div class="w-50 me-2">
+                    <label class="form-label">Allowed Object Prefix</label>
+                    <input type="text" class="form-control" placeholder="Optional: data/project-a/" v-model.trim="objectStorageData.prefix">
+                  </div>
+                  <div class="w-50 ms-2">
+                    <label class="form-label">Access Mode</label>
+                    <select class="form-select" v-model="objectStorageData.accessMode">
+                      <option value="READ_ONLY">Read only</option>
+                      <option value="READ_WRITE">Read and write</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="mt-2">
+                  <label class="form-label required">Jupyter Access Token</label>
+                  <input type="password" class="form-control" placeholder="At least 12 characters" v-model="objectStorageData.jupyterToken" autocomplete="new-password">
+                  <p class="text-muted mt-1 mb-0">
+                    This is the Jupyter login token, not a CSP secret key. Use it at http://&lt;VM public IP&gt;:{{ inputServicePort }}.
+                  </p>
+                </div>
+
+                <p class="text-muted mt-2 mb-0">
+                  Jupyter requests short-lived presigned URLs through Application Manager. Multiple CSPs can be selected.
+                </p>
+
+                <div class="alert mt-3" :class="objectStorageCheckResult.success ? 'alert-success' : 'alert-danger'" v-if="objectStorageCheckResult">
+                  <div>{{ objectStorageCheckResult.success ? 'Object Storage: SUCCESS' : 'Object Storage: FAILED' }}</div>
+                  <ul class="mb-0 ps-3">
+                    <li v-for="check in objectStorageCheckResult.checks" :key="check.name">
+                      {{ check.name }} - {{ check.success ? 'OK' : 'FAIL' }}
+                    </li>
+                  </ul>
+                </div>
+              </div>
             </div>
           </template>
 
@@ -519,7 +623,7 @@
                 <div class="d-flex justify-content-between">
                   <div class="w-50 me-2">
                     <label class="form-label">Target CSP</label>
-                    <input type="text" class="form-control" :value="selectedClusterProvider || '-'" disabled>
+                    <input type="text" class="form-control" :value="selectedTargetProvider || '-'" disabled>
                   </div>
                   <div class="w-50 ms-2">
                     <label class="form-label">Storage API</label>
@@ -625,7 +729,7 @@ import { onMounted, watch, computed } from 'vue';
 // @ts-ignore
 import _ from 'lodash';
 import { getNsInfo, getMciInfo, getVmInfo, getClusterInfo } from '@/api/tumblebug'
-import { getK8sStorageClasses, getSoftwareCatalogList, k8sSpecCheck, objectStorageSmokeCheck, runK8SInstall, runAction, runVmInstall, vmSpecCheck } from '@/api/softwareCatalog'
+import { getK8sStorageClasses, getRegisteredObjectStorages, getSoftwareCatalogList, k8sSpecCheck, objectStorageSmokeCheck, runK8SInstall, runAction, runVmInstall, vmSpecCheck } from '@/api/softwareCatalog'
 import { type SoftwareCatalog } from '@/views/type/type'
 import { useUserStore } from '@/stores/user'
 
@@ -735,6 +839,9 @@ const ingressData = ref({} as any)
 const objectStorageData = ref({} as any)
 const objectStorageCheckResult = ref(null as any)
 const objectStorageChecking = ref(false as boolean)
+const registeredObjectStorageList = ref([] as any[])
+const registeredObjectStorageLoading = ref(false as boolean)
+const registeredObjectStorageLoadError = ref(false as boolean)
 const deploying = ref(false)
 const selectedResourceType = ref("GENERAL_PURPOSE" as string)
 const storageClassList = ref([] as any[])
@@ -746,6 +853,8 @@ const clusterList = ref([] as any)
 const selectCluster = ref("" as string)
 const inputApplications = ref("" as string)
 const inputServicePort = ref("" as string)
+const vmNetworkExposureMode = ref<'PRIVATE' | 'RESTRICTED'>('PRIVATE')
+const servicePortCidr = ref("" as string)
 const specCheckFlag = ref(true as boolean)
 const selectedCatalogIdx = ref(0 as number)
 const projectScopeError = ref('')
@@ -771,6 +880,8 @@ const clearTargetResources = () => {
   vmList.value = []
   originalVmList.value = []
   clusterList.value = []
+  registeredObjectStorageList.value = []
+  registeredObjectStorageLoadError.value = false
   selectNsId.value = ''
   selectMci.value = ''
   selectVm.value = ''
@@ -907,12 +1018,17 @@ const setInit = async () => {
   objectStorageData.value = getDefaultObjectStorageData()
   objectStorageCheckResult.value = null
   objectStorageChecking.value = false
+  registeredObjectStorageList.value = []
+  registeredObjectStorageLoading.value = false
+  registeredObjectStorageLoadError.value = false
   storageClassList.value = []
   selectedStorageClass.value = ""
   storageClassLoading.value = false
   storageClassLoadError.value = false
   selectedResourceType.value = "GENERAL_PURPOSE"
   inputServicePort.value = ""
+  vmNetworkExposureMode.value = 'PRIVATE'
+  servicePortCidr.value = ""
   inputApplications.value = ""
   selectedCatalogIdx.value = 0
 
@@ -1137,6 +1253,37 @@ const _getClusterName = async (loadSequence = resourceLoadSequence) => {
   }
 }
 
+const fetchRegisteredObjectStorages = async () => {
+  registeredObjectStorageList.value = []
+  registeredObjectStorageLoadError.value = false
+
+  if (
+    selectInfra.value !== 'VM'
+    || !isJupyterObjectStorageCatalog.value
+    || _.isEmpty(selectNsId.value)
+  ) {
+    return
+  }
+
+  registeredObjectStorageLoading.value = true
+  try {
+    const { data } = await getRegisteredObjectStorages(selectNsId.value)
+    registeredObjectStorageList.value = Array.isArray(data) ? data : []
+    const availableIds = registeredObjectStorageList.value
+      .filter((storage: any) => String(storage.status || '').toLowerCase() === 'available')
+      .map((storage: any) => storage.id)
+    objectStorageData.value.selectedStorageIds = (objectStorageData.value.selectedStorageIds || [])
+      .filter((id: string) => availableIds.includes(id))
+    if (objectStorageData.value.selectedStorageIds.length === 0 && availableIds.length === 1) {
+      objectStorageData.value.selectedStorageIds = [availableIds[0]]
+    }
+  } catch (error) {
+    registeredObjectStorageLoadError.value = true
+  } finally {
+    registeredObjectStorageLoading.value = false
+  }
+}
+
 const fetchStorageClasses = async () => {
   storageClassList.value = []
   selectedStorageClass.value = ""
@@ -1175,6 +1322,7 @@ const getInitialStorageClass = (items: any[]) => {
 const onChangeNsId = async () => {
   selectedVmList.value = [];
   await _getMciName(resourceLoadSequence);
+  await fetchRegisteredObjectStorages();
   onChangeForm();
 }
 
@@ -1282,6 +1430,29 @@ const runInstall = async () => {
     toast.error('Please Select Infra')
     return
   }
+  if (
+    selectInfra.value === 'VM'
+    && modalTitle.value === 'Application Installation'
+    && vmNetworkExposureMode.value === 'RESTRICTED'
+    && (!servicePortCidr.value || servicePortCidr.value === '0.0.0.0/0')
+  ) {
+    toast.error('Enter a restricted IPv4 CIDR such as 203.0.113.10/32')
+    return
+  }
+  if (selectInfra.value === 'VM' && isJupyterObjectStorageCatalog.value) {
+    if ((objectStorageData.value.selectedStorageIds || []).length === 0) {
+      toast.error('Select at least one registered Object Storage resource')
+      return
+    }
+    if (String(objectStorageData.value.jupyterToken || '').length < 12) {
+      toast.error('Enter a Jupyter access token with at least 12 characters')
+      return
+    }
+    if (!objectStorageCheckPassed.value) {
+      toast.error('Run the Object Storage check before deployment')
+      return
+    }
+  }
   if (selectInfra.value === 'K8S' && !validateStorageClassSelection()) return
 
   deploying.value = true
@@ -1306,10 +1477,13 @@ const runInstall = async () => {
           clusterName: clusterName,
           catalogId: selectedCatalogIdx.value,
           servicePort,
+          openServicePort: vmNetworkExposureMode.value === 'RESTRICTED',
+          servicePortCidr: vmNetworkExposureMode.value === 'RESTRICTED' ? servicePortCidr.value : undefined,
           username: "admin",
           deploymentType: selectInfra.value,
           vmDeploymentMode: selectDeploymentType.value.toUpperCase(),
           resourceType: selectedResourceType.value,
+          additionalConfig: buildVmAdditionalConfig(),
         }
         res = await runVmInstall(params)
       } else {
@@ -1457,6 +1631,16 @@ const selectedClusterProvider = computed(() => {
   return cluster?.connectionConfig?.providerName || cluster?.connectionName || ''
 })
 
+const selectedVmProvider = computed(() => {
+  const selectedVmId = selectedVmList.value[0]
+  const vm = originalVmList.value.find((item: any) => getVmValue(item) === selectedVmId)
+  return vm?.connectionConfig?.providerName || vm?.connectionName || ''
+})
+
+const selectedTargetProvider = computed(() => {
+  return selectInfra.value === 'VM' ? selectedVmProvider.value : selectedClusterProvider.value
+})
+
 const selectedCatalogChartName = computed(() => {
   return String(selectedCatalogInfo.value?.helmChart?.chartName || '').toLowerCase()
 })
@@ -1466,6 +1650,10 @@ const STORAGE_CLASS_CAPABILITY = 'storage-class'
 const CONFIG_CAPABILITY_REF_TYPES = ['CAPABILITY', 'TAG']
 
 const isLokiCatalog = computed(() => selectedCatalogChartName.value === 'loki')
+const isJupyterObjectStorageCatalog = computed(() => {
+  const packageName = String(selectedCatalogInfo.value?.packageInfo?.packageName || '').toLowerCase()
+  return packageName.includes('jupyter') && hasObjectStorageCapability(selectedCatalogInfo.value as SoftwareCatalog)
+})
 
 const supportsStorageClassConfig = computed(() => {
   if (selectInfra.value !== 'K8S') return false
@@ -1505,25 +1693,30 @@ const storageClassErrorMessage = computed(() => {
 })
 
 const objectStorageEndpointPlaceholder = computed(() => {
-  return isAwsProvider(selectedClusterProvider.value)
+  return isAwsProvider(selectedTargetProvider.value)
     ? 'Optional: https://s3.ap-northeast-2.amazonaws.com'
     : 'https://object-storage.example.com'
 })
 
 const objectStorageRegionPlaceholder = computed(() => {
-  return isAwsProvider(selectedClusterProvider.value)
+  return isAwsProvider(selectedTargetProvider.value)
     ? 'ap-northeast-2'
     : 'region from object storage service'
 })
 
 const showObjectStorageConfig = computed(() => {
-  if (selectInfra.value !== 'K8S') return false
-  if (!selectedCatalogInfo.value?.helmChart) return false
-  return isLokiCatalog.value || hasObjectStorageCapability(selectedCatalogInfo.value)
+  if (!selectedCatalogInfo.value || !hasObjectStorageCapability(selectedCatalogInfo.value)) return false
+  if (selectInfra.value === 'VM') {
+    return Boolean(selectedCatalogInfo.value.packageInfo) && isJupyterObjectStorageCatalog.value
+  }
+  if (selectInfra.value === 'K8S') {
+    return Boolean(selectedCatalogInfo.value.helmChart)
+  }
+  return false
 })
 
 const shouldRunObjectStorageCheck = computed(() => {
-  return selectInfra.value === 'K8S' && showObjectStorageConfig.value && objectStorageData.value.enabled
+  return showObjectStorageConfig.value && objectStorageData.value.enabled
 })
 
 const objectStorageCheckPassed = computed(() => {
@@ -1538,17 +1731,22 @@ const deployDisabled = computed(() => {
     || (storageClassRequired.value && !_.isEmpty(storageClassErrorMessage.value))
 })
 
-function getDefaultObjectStorageData(provider = selectedClusterProvider.value, enabled = objectStorageRequired.value) {
+function getDefaultObjectStorageData(provider = selectedTargetProvider.value, enabled = objectStorageRequired.value) {
   const isAws = isAwsProvider(provider)
 
   return {
     enabled: Boolean(enabled),
+    selectedStorageIds: [],
+    accessMode: 'READ_ONLY',
     backendType: 's3',
     endpoint: '',
     region: '',
     bucket: '',
+    prefix: '',
     accessKey: '',
     secretKey: '',
+    sessionToken: '',
+    jupyterToken: '',
     forcePathStyle: !isAws
   }
 }
@@ -1558,7 +1756,8 @@ function isAwsProvider(provider: string) {
 }
 
 const objectStorageRequired = computed(() => {
-  return selectInfra.value === 'K8S' && isLokiCatalog.value
+  return (selectInfra.value === 'K8S' && isLokiCatalog.value)
+    || (selectInfra.value === 'VM' && isJupyterObjectStorageCatalog.value)
 })
 
 function hasObjectStorageCapability(catalog: SoftwareCatalog) {
@@ -1575,17 +1774,39 @@ function hasCatalogCapability(catalog: SoftwareCatalog, capability: string) {
 }
 
 function buildObjectStorageConfig() {
+  if (selectInfra.value === 'VM') {
+    const selectedIds = objectStorageData.value.selectedStorageIds || []
+    return {
+      enabled: objectStorageData.value.enabled,
+      jupyterToken: objectStorageData.value.jupyterToken,
+      storages: selectedIds.map((objectStorageId: string) => ({
+        objectStorageId,
+        alias: objectStorageId,
+        prefix: objectStorageData.value.prefix,
+        accessMode: objectStorageData.value.accessMode
+      }))
+    }
+  }
+
   return {
     enabled: objectStorageData.value.enabled,
     backendType: objectStorageData.value.backendType,
     endpoint: objectStorageData.value.endpoint,
     region: objectStorageData.value.region,
     bucket: objectStorageData.value.bucket,
+    prefix: objectStorageData.value.prefix,
     accessKey: objectStorageData.value.accessKey,
     secretKey: objectStorageData.value.secretKey,
+    sessionToken: objectStorageData.value.sessionToken,
+    jupyterToken: objectStorageData.value.jupyterToken,
     forcePathStyle: objectStorageData.value.forcePathStyle,
     insecure: isHttpEndpoint(objectStorageData.value.endpoint)
   }
+}
+
+function buildVmAdditionalConfig() {
+  if (!showObjectStorageConfig.value || !objectStorageData.value.enabled) return undefined
+  return { objectStorage: buildObjectStorageConfig() }
 }
 
 function buildK8sAdditionalConfig() {
@@ -1621,8 +1842,11 @@ const runObjectStorageCheck = async (showToast = true) => {
   objectStorageCheckResult.value = null
 
   const params = {
+    targetType: selectInfra.value as 'VM' | 'K8S',
     namespace: selectNsId.value,
-    clusterName: selectCluster.value,
+    clusterName: selectInfra.value === 'K8S' ? selectCluster.value : undefined,
+    mciId: selectInfra.value === 'VM' ? selectMci.value : undefined,
+    vmId: selectInfra.value === 'VM' ? selectedVmList.value[0] : undefined,
     catalogId: selectedCatalogIdx.value,
     objectStorage: buildObjectStorageConfig()
   }
@@ -1682,6 +1906,7 @@ const onChangeCatalog = async () => {
     objectStorageCheckResult.value = null
   }
 
+  await fetchRegisteredObjectStorages()
   await fetchStorageClasses()
 }
 

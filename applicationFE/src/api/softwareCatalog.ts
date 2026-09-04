@@ -39,10 +39,13 @@ export const runVmInstall = (params: {
   clusterName: string,
   catalogId: number,
   servicePort?: number,
+  openServicePort?: boolean,
+  servicePortCidr?: string,
   username: string,
   deploymentType: string,
   vmDeploymentMode: string,
   resourceType: string,
+  additionalConfig?: Record<string, any>,
 }) => {
   return request.post(`/applications/vm/deploy`, params)
 }
@@ -78,12 +81,23 @@ export const runK8SInstall = (params: {
 }
 
 export const objectStorageSmokeCheck = (params: {
+  targetType: 'VM' | 'K8S',
   namespace: string,
-  clusterName: string,
+  clusterName?: string,
+  mciId?: string,
+  vmId?: string,
   catalogId: number,
   objectStorage: Record<string, any>
 }) => {
-  return request.post(`/applications/k8s/object-storage/smoke-check`, params)
+  const endpoint = params.targetType === 'VM'
+    ? `/applications/vm/object-storage/smoke-check`
+    : `/applications/k8s/object-storage/smoke-check`
+  const { targetType: _targetType, ...requestBody } = params
+  return request.post(endpoint, requestBody)
+}
+
+export const getRegisteredObjectStorages = (namespace: string) => {
+  return request.get(`/applications/object-storages?namespace=${encodeURIComponent(namespace)}`)
 }
 
 export const getK8sStorageClasses = (params: {
