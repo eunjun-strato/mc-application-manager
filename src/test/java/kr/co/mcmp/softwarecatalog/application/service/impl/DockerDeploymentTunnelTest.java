@@ -92,4 +92,19 @@ class DockerDeploymentTunnelTest {
         verify(exposure,never()).addRestrictedInboundRule(any(),any(),any());
         verify(tunnels,atLeastOnce()).remove(1L);
     }
+
+    @Test void imageFailurePreservesCauseAndDoesNotOpenIngressOrInstallTunnel(){
+        var vm=new VmAccessInfo();vm.setPublicIP("192.0.2.10");
+        when(tumblebug.getVmInfo("default","infra","vm")).thenReturn(vm);
+        when(docker.runDockerContainer(eq(target),anyMap(),anyMap(),anyString(),anyList(),anyList(),eq(0)))
+                .thenReturn(new ContainerDeployResult(null,"VM image preparation failed: image pull timed out",false));
+        Object result=ReflectionTestUtils.invokeMethod(service,"deployToSingleVmAsync",
+                request,catalog,history,null,"vm",0,List.of("vm"),null);
+        assertThat((Boolean)ReflectionTestUtils.invokeMethod(result,"isSuccess")).isFalse();
+        assertThat((String)ReflectionTestUtils.invokeMethod(result,"getErrorMessage"))
+                .contains("image preparation", "image pull timed out");
+        verify(tunnels,never()).install(any(),any(),any());
+        verify(exposure,never()).addRestrictedInboundRule(any(),any(),any());
+        verify(grants).revoke(1L,"vm");
+    }
 }

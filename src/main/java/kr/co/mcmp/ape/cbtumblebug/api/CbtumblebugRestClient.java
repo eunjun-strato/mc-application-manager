@@ -1,6 +1,7 @@
 package kr.co.mcmp.ape.cbtumblebug.api;
 
 import java.net.URI;
+import java.net.SocketTimeoutException;
 
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
@@ -11,9 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponents;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import kr.co.mcmp.ape.cbtumblebug.exception.CbtumblebugException;
@@ -39,7 +38,7 @@ public class CbtumblebugRestClient {
             throw new CbtumblebugException(e.getRawStatusCode(), e.getResponseBodyAsString());
         } catch (RestClientException e) {
             log.error("RestClientException: ", e);
-            throw new CbtumblebugException(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Internal server error occurred");
+            throw transportFailure(e);
         } catch (Exception e) {
             log.error("Unexpected error: ", e);
             throw new CbtumblebugException(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Unexpected error occurred");
@@ -61,10 +60,22 @@ public class CbtumblebugRestClient {
             throw new CbtumblebugException(e.getRawStatusCode(), e.getResponseBodyAsString());
         } catch (RestClientException e) {
             log.error("RestClientException: ", e);
-            throw new CbtumblebugException(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Internal server error occurred");
+            throw transportFailure(e);
         } catch (Exception e) {
             log.error("Unexpected error: ", e);
             throw new CbtumblebugException(HttpStatus.INTERNAL_SERVER_ERROR.value(), "Unexpected error occurred");
         }
+    }
+
+    private CbtumblebugException transportFailure(RestClientException exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SocketTimeoutException) {
+                return new CbtumblebugException(HttpStatus.GATEWAY_TIMEOUT.value(),
+                        "Tumblebug response timed out. Remote work may still be running; check VM progress before retrying.");
+            }
+        }
+        // Do not include request URLs or bodies, which can contain credentials.
+        return new CbtumblebugException(HttpStatus.BAD_GATEWAY.value(),
+                "Tumblebug communication failed (" + exception.getClass().getSimpleName() + ").");
     }
 }

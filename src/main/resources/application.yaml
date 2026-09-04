@@ -4,6 +4,9 @@ config:
   config-string: application,manager,m-cmp
 
 app:
+  vm-deployment:
+    # Remote pulls are bounded; command HTTP waits allow an additional 120 seconds.
+    image-pull-timeout-seconds: ${VM_IMAGE_PULL_TIMEOUT_SECONDS:1800}
   object-storage:
     transport: ${OBJECT_STORAGE_TRANSPORT:SSH_TUNNEL}
     tunnel:
