@@ -59,7 +59,9 @@ class DockerDeploymentTunnelTest {
         ReflectionTestUtils.invokeMethod(service,"configureJupyterObjectStorage",parameters,request,catalog,history,"vm");
         assertThat(parameters.getEnvironmentVariables()).containsEntry("MCMP_OBJECT_STORAGE_GATEWAY_URL",
                 "http://127.0.0.1:18084/applications/object-storage-gateway");
-        assertThat(String.join(" ",parameters.getCommandArguments())).contains("if [ ! -e /home/jovyan/work/ObjectStorage.ipynb ]; then");
+        assertThat(String.join(" ",parameters.getCommandArguments()))
+                .contains("if [ ! -e /home/jovyan/work/sample-data.ipynb ]; then")
+                .contains("--ServerApp.default_url=/lab/tree/sample-data.ipynb");
     }
 
     void runtimeReady(){

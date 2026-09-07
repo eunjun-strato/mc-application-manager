@@ -12,7 +12,7 @@ matplotlib.use('Agg')
 import pandas as pd
 import requests
 
-NOTEBOOK = json.loads(Path(sys.argv[1]).read_text())
+NOTEBOOK = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
 CELLS = {c['id']: ''.join(c['source']) for c in NOTEBOOK['cells'] if c['cell_type'] == 'code'}
 CSV = b'region,usage\nseoul,2\ntokyo,3\nseoul,4\n'
 
@@ -56,6 +56,23 @@ class NotebookTests(unittest.TestCase):
                          {'seoul': 6, 'tokyo': 3})
         self.run_cell('mcmp-export')
         self.ns['upload'].assert_not_called()
+
+    def test_default_flow_loads_every_granted_storage(self):
+        self.ns['storages'] = lambda: [
+            dict(alias='bucket-a', provider='aws', accessMode='READ_ONLY', prefix='data/'),
+            dict(alias='bucket-b', provider='ncp', accessMode='READ_ONLY', prefix='data/'),
+        ]
+        listing = Mock(return_value=pd.DataFrame([dict(key='data/test.csv', size=len(CSV))]))
+        self.ns['list_objects'] = listing
+        self.run_cell('mcmp-storages')
+        self.run_cell('mcmp-settings')
+        self.run_cell('mcmp-objects')
+        self.run_cell('mcmp-preview')
+
+        self.assertEqual(set(self.ns['loaded_data']), {'bucket-a', 'bucket-b'})
+        self.assertEqual(set(self.ns['selected_keys']), {'bucket-a', 'bucket-b'})
+        self.assertEqual(listing.call_count, 2)
+        self.assertEqual(self.ns['_preview_bytes'].call_count, 2)
 
     def test_empty_bucket_clears_stale_data_and_skips_chart(self):
         self.ns['df'] = pd.DataFrame({'old': [9]})

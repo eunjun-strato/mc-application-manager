@@ -62,7 +62,7 @@ class DockerDeploymentServiceTest {
 
         assertThat(root.path("nbformat").asInt()).isEqualTo(4);
         assertThat(root.path("cells").size()).isEqualTo(15);
-        assertThat(root.path("metadata").path("mcmp").path("templateVersion").asInt()).isEqualTo(2);
+        assertThat(root.path("metadata").path("mcmp").path("templateVersion").asInt()).isEqualTo(3);
         assertThat(notebook)
                 .contains("MCMP_OBJECT_STORAGE_GATEWAY_URL")
                 .contains("presigned-url")
@@ -88,5 +88,12 @@ class DockerDeploymentServiceTest {
         }
         assertThat(ids).contains("mcmp-storages", "mcmp-settings", "mcmp-objects",
                 "mcmp-preview", "mcmp-chart", "mcmp-export");
+        assertThat(DockerDeploymentService.jupyterObjectStorageNotebook())
+                .contains("sample-data")
+                .contains("background_gradient")
+                .contains("plt.cm.Blues")
+                .doesNotContain("CONNECTED CLOUD STORAGE")
+                .doesNotContain("SAMPLE DATA DASHBOARD")
+                .doesNotContain("card_html");
     }
 }

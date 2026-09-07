@@ -59,7 +59,7 @@ Relay는 Object Storage의 storages/objects/presigned-url API 및 readiness만 �
 새 설치부터 관리형 터널이 구성됩니다. 기존 설치 전환은 노트북/volume 백업 후 AM에서 재설치하는 절차로 진행합니다.
 기존 수동 테스트용 `mcmp-jupyter-tunnel.service`, `mcmp-jupyter-ssh-bridge`와 notebook은 자동으로 가져오거나 삭제하지 않습니다.
 
-기본 notebook은 파일이 없을 때만 생성합니다. 기존 volume을 재사용하면 사용자가 수정한 notebook도 보존됩니다.
+기본 notebook은 `sample-data.ipynb`라는 이름으로 파일이 없을 때만 생성합니다. 기존 volume을 재사용하면 사용자가 수정한 notebook도 보존됩니다.
 기존 파일에 gateway가 하드코딩되어 있다면 environment 기반 주소로 수정하거나 새 기본 notebook을 별도로 받아야 합니다.
 
 DB를 초기화할 필요는 없습니다. 현재 `DDL_AUTO=update` 환경에서는 새 테이블이 생성됩니다.

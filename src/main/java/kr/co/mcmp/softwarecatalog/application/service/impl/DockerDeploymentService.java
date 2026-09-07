@@ -615,11 +615,11 @@ public class DockerDeploymentService implements DeploymentService {
                 "bash",
                 "-lc",
                 "set -e; "
-                        + "if [ ! -e /home/jovyan/work/ObjectStorage.ipynb ]; then "
-                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/ObjectStorage.ipynb; fi; "
-                        + "chmod 600 /home/jovyan/work/ObjectStorage.ipynb; "
+                        + "if [ ! -e /home/jovyan/work/sample-data.ipynb ]; then "
+                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/sample-data.ipynb; fi; "
+                        + "chmod 600 /home/jovyan/work/sample-data.ipynb; "
                         + "exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\" "
-                        + "--ServerApp.default_url=/lab/tree/ObjectStorage.ipynb"));
+                        + "--ServerApp.default_url=/lab/tree/sample-data.ipynb"));
     }
 
     @SuppressWarnings("unchecked")
