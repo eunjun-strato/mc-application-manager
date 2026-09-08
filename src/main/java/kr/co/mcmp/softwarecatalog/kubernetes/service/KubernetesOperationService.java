@@ -39,6 +39,8 @@ public class KubernetesOperationService {
 
     private final HelmChartService helmChartService;
     private final KubernetesClientFactory kubernetesClientFactory;
+    private final K8sIngressAccessService ingressAccess;
+    private final kr.co.mcmp.softwarecatalog.application.repository.DeploymentHistoryRepository histories;
 
     public void restartApplication(String namespace, String clusterName, SoftwareCatalog catalog, String username) {
         try {
@@ -125,11 +127,16 @@ public class KubernetesOperationService {
             tempKubeconfigPath = createTempKubeconfigFile(kubeconfigYaml);
             String releaseName = findInstalledReleaseName(DEFAULT_HELM_NAMESPACE, tempKubeconfigPath, catalog);
             if (releaseName == null) {
-                releaseName = catalog.getHelmChart().getChartName();
+                releaseName = histories.findByCatalogIdAndClusterNameAndNamespaceAndActionTypeOrderByExecutedAtDesc(
+                        catalog.getId(), clusterName, namespace, kr.co.mcmp.softwarecatalog.application.constants.ActionType.INSTALL)
+                        .stream().filter(h -> "DELETE_PENDING".equals(h.getStatus()) && h.getReleaseName() != null)
+                        .map(kr.co.mcmp.softwarecatalog.application.model.DeploymentHistory::getReleaseName)
+                        .findFirst().orElse(catalog.getHelmChart().getChartName());
                 log.warn("Installed release was not found. Trying chart name as release name: {}", releaseName);
             }
 
             runHelmUninstallCli(releaseName, DEFAULT_HELM_NAMESPACE, tempKubeconfigPath);
+            releaseIngressRules(namespace, clusterName, catalog.getId(), releaseName);
             log.info("Application uninstall completed: {}", releaseName);
         } catch (Exception e) {
             log.error("Application uninstall failed", e);
@@ -151,6 +158,22 @@ public class KubernetesOperationService {
             return runHelmGetManifestCli(releaseName, DEFAULT_HELM_NAMESPACE, tempKubeconfigPath);
         } finally {
             deleteTempKubeconfig(tempKubeconfigPath);
+        }
+    }
+
+    void releaseIngressRules(String namespace, String clusterName, Long catalogId, String releaseName) {
+        for (var history : histories.findByCatalogIdAndClusterNameAndNamespaceAndActionTypeOrderByExecutedAtDesc(
+                catalogId, clusterName, namespace, kr.co.mcmp.softwarecatalog.application.constants.ActionType.INSTALL)) {
+            if (!Objects.equals(releaseName, history.getReleaseName())) continue;
+            try {
+                ingressAccess.release(history.getId());
+                history.setStatus("UNINSTALLED");
+            } catch (RuntimeException error) {
+                history.setStatus("DELETE_PENDING");
+                histories.saveAndFlush(history);
+                throw error;
+            }
+            histories.saveAndFlush(history);
         }
     }
 
@@ -448,6 +471,7 @@ public class KubernetesOperationService {
         java.util.List<String> cmd = new java.util.ArrayList<>();
         cmd.add(helmChartService.getHelmPath()); cmd.add("uninstall");
         cmd.add(releaseName);
+        cmd.add("--ignore-not-found");
         cmd.add("--namespace"); cmd.add(namespace);
         if (kubeconfig != null) {
             cmd.add("--kubeconfig"); cmd.add(kubeconfig.toString());

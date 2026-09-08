@@ -22,6 +22,22 @@ import org.springframework.test.util.ReflectionTestUtils;
 @ExtendWith(MockitoExtension.class)
 class CbtumblebugRestApiSecurityGroupTest {
 
+    @Test void workerDiscoveryAndImportStayBehindTumblebug() throws Exception {
+        when(restClient.request(anyString(), any(), any(), any(), any())).thenAnswer(i ->
+                ResponseEntity.ok(i.getArgument(0,String.class).endsWith("/readyz") ? "ready" : "{}"));
+        api.getCspWorkerInfo("aws-seoul", "i-worker");
+        api.registerExistingSecurityGroup("default","aws-seoul","vnet","worker","sg-existing");
+        var urls=ArgumentCaptor.forClass(String.class);
+        var bodies=ArgumentCaptor.forClass(Object.class);
+        verify(restClient,atLeast(2)).request(urls.capture(),any(),bodies.capture(),any(),any());
+        assertThat(urls.getAllValues()).contains("http://mc-infra-manager:1323/tumblebug/forward/cspvm/i-worker",
+                "http://mc-infra-manager:1323/tumblebug/ns/default/resources/securityGroup?option=register");
+        String body=bodies.getAllValues().stream().filter(String.class::isInstance).map(String.class::cast)
+                .filter(s->s.contains("cspResourceId")).findFirst().orElseThrow();
+        assertThat(new ObjectMapper().readTree(body).path("cspResourceId").asText()).isEqualTo("sg-existing");
+        assertThat(body).doesNotContain("firewallRules");
+    }
+
     @Mock
     private CbtumblebugRestClient restClient;
 

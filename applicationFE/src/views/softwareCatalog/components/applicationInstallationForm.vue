@@ -405,7 +405,7 @@
               <p class="text-muted">Select the application</p>
               <select class="form-select" v-model="inputApplications" @change="onChangeCatalog">
                 <option v-for="(catalog, idx) in filteredCatalogList" :key="idx" :value="catalog.name">
-                  [{{ catalog.name }}] {{ catalog.helmChart?.chartVersion || "latest" }}
+                  [{{ catalog.name }}] {{ catalog.helmChart?.chartVersion || catalog.packageInfo?.packageVersion || "latest" }}
                 </option>
               </select>
             </div>
@@ -413,7 +413,7 @@
             <div class="mb-3" v-if="modalTitle == 'Application Installation'">
               <label class="form-label">Port</label>
               <p class="text-muted">Please enter a service port for the Kubernetes service</p>
-              <input type="number" class="form-control" placeholder="80" v-model="inputServicePort">
+              <input type="number" class="form-control" placeholder="80" v-model="inputServicePort" :disabled="isJupyterObjectStorageCatalog">
             </div>
 
             <div class="mb-3" v-if="modalTitle == 'Application Installation'">
@@ -446,6 +446,15 @@
               </p>
             </div>
 
+            <div class="mb-3" v-if="modalTitle == 'Application Installation' && ingressData.ingressEnabled">
+              <label class="form-label required">Allowed IPv4 CIDR</label>
+              <input class="form-control" placeholder="203.0.113.10/32" v-model.trim="servicePortCidr">
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" id="k8sOpenIngress" v-model="k8sOpenIngress">
+                <label class="form-check-label" for="k8sOpenIngress">Allow this CIDR on the worker Security Group (TCP 30880)</label>
+              </div>
+              <p class="text-muted mt-1">Access: http://{{ ingressData.ingressHost || 'your-ingress-host' }}:30880. For testing, map this hostname to an accessible Kubernetes node public IP in your PC hosts file. With source-IP preservation, use a node running the Ingress Controller.</p>
+            </div>
             <!-- K8S :: HPA -->
             <div class="mb-3" v-if="modalTitle == 'Application Installation'" >
               <label class="form-label">HPA Configuration</label>
@@ -602,7 +611,88 @@
               </div>
             </div>
 
-            <div class="mb-3" v-if="modalTitle == 'Application Installation' && showObjectStorageConfig">
+            <div class="mb-3" v-if="modalTitle == 'Application Installation' && showObjectStorageConfig && isJupyterObjectStorageCatalog">
+              <label class="form-label">Object Storage Configuration</label>
+              <p class="text-muted">
+                Select Object Storage resources already registered in Tumblebug. CSP access keys are not sent to JupyterLab.
+              </p>
+
+              <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" id="k8sJupyterObjectStorageEnabled"
+                  v-model="objectStorageData.enabled" :disabled="objectStorageRequired">
+                <label class="form-check-label" for="k8sJupyterObjectStorageEnabled">Enable Object Storage</label>
+              </div>
+
+              <div v-if="objectStorageData.enabled">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                  <label class="form-label mb-0 required">Registered Object Storage</label>
+                  <button type="button" class="btn btn-sm btn-outline-secondary"
+                    :disabled="registeredObjectStorageLoading" @click="fetchRegisteredObjectStorages">
+                    Refresh
+                  </button>
+                </div>
+
+                <div class="text-muted" v-if="registeredObjectStorageLoading">Loading Object Storage resources...</div>
+                <div class="alert alert-danger py-2" v-else-if="registeredObjectStorageLoadError">
+                  Object Storage resources could not be loaded from Tumblebug.
+                </div>
+                <div class="alert alert-warning py-2" v-else-if="registeredObjectStorageList.length === 0">
+                  No Object Storage resource is registered in this namespace.
+                </div>
+                <div class="border rounded p-2" v-else>
+                  <div class="form-check" v-for="storage in registeredObjectStorageList" :key="storage.id">
+                    <input class="form-check-input" type="checkbox"
+                      :id="`vm-object-storage-${storage.id}`"
+                      :value="storage.id"
+                      :disabled="String(storage.status || '').toLowerCase() !== 'available'"
+                      v-model="objectStorageData.selectedStorageIds">
+                    <label class="form-check-label" :for="`vm-object-storage-${storage.id}`">
+                      {{ storage.name || storage.id }}
+                      <span class="text-muted">
+                        ({{ storage.provider || 'unknown CSP' }}{{ storage.region ? ` / ${storage.region}` : '' }} / {{ storage.status || 'unknown' }})
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="d-flex justify-content-between mt-2">
+                  <div class="w-50 me-2">
+                    <label class="form-label">Allowed Object Prefix</label>
+                    <input type="text" class="form-control" placeholder="Optional: data/project-a/" v-model.trim="objectStorageData.prefix">
+                  </div>
+                  <div class="w-50 ms-2">
+                    <label class="form-label">Access Mode</label>
+                    <select class="form-select" v-model="objectStorageData.accessMode">
+                      <option value="READ_ONLY">Read only</option>
+                      <option value="READ_WRITE">Read and write</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="mt-2">
+                  <label class="form-label required">Jupyter Access Token</label>
+                  <input type="password" class="form-control" placeholder="At least 12 characters" v-model="objectStorageData.jupyterToken" autocomplete="new-password">
+                  <p class="text-muted mt-1 mb-0">
+                    This is the Jupyter login token, not a CSP secret key. Use it at the Ingress URL shown below.
+                  </p>
+                </div>
+
+                <p class="text-muted mt-2 mb-0">
+                  Jupyter requests short-lived presigned URLs through Application Manager. Multiple CSPs can be selected.
+                </p>
+
+                <div class="alert mt-3" :class="objectStorageCheckResult.success ? 'alert-success' : 'alert-danger'" v-if="objectStorageCheckResult">
+                  <div>{{ objectStorageCheckResult.success ? 'Object Storage: SUCCESS' : 'Object Storage: FAILED' }}</div>
+                  <ul class="mb-0 ps-3">
+                    <li v-for="check in objectStorageCheckResult.checks" :key="check.name">
+                      {{ check.name }} - {{ check.success ? 'OK' : 'FAIL' }}
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-3" v-if="modalTitle == 'Application Installation' && showObjectStorageConfig && !isJupyterObjectStorageCatalog">
               <label class="form-label">Object Storage Configuration</label>
 
               <div class="mb-2">
@@ -855,6 +945,7 @@ const inputApplications = ref("" as string)
 const inputServicePort = ref("" as string)
 const vmNetworkExposureMode = ref<'PRIVATE' | 'RESTRICTED'>('PRIVATE')
 const servicePortCidr = ref("" as string)
+const k8sOpenIngress = ref(true)
 const specCheckFlag = ref(true as boolean)
 const selectedCatalogIdx = ref(0 as number)
 const projectScopeError = ref('')
@@ -1244,6 +1335,11 @@ const _getClusterName = async (loadSequence = resourceLoadSequence) => {
           : 'No Kubernetes cluster is available in this project.'
       }
     }
+    if (selectInfra.value === 'K8S' && isJupyterObjectStorageCatalog.value) {
+      ingressData.value.ingressEnabled = true
+      hpaData.value.hpaEnabled = false
+      hpaData.value.hpaMinReplicas = 1
+    }
     objectStorageData.value = getDefaultObjectStorageData()
     objectStorageCheckResult.value = null
     await fetchStorageClasses()
@@ -1258,7 +1354,7 @@ const fetchRegisteredObjectStorages = async () => {
   registeredObjectStorageLoadError.value = false
 
   if (
-    selectInfra.value !== 'VM'
+    !['VM', 'K8S'].includes(selectInfra.value)
     || !isJupyterObjectStorageCatalog.value
     || _.isEmpty(selectNsId.value)
   ) {
@@ -1439,7 +1535,23 @@ const runInstall = async () => {
     toast.error('Enter a restricted IPv4 CIDR such as 203.0.113.10/32')
     return
   }
-  if (selectInfra.value === 'VM' && isJupyterObjectStorageCatalog.value) {
+  if (selectInfra.value === 'K8S' && modalTitle.value === 'Application Installation' && ingressData.value.ingressEnabled) {
+    if (!servicePortCidr.value || servicePortCidr.value === '0.0.0.0/0' || ingressData.value.ingressClass !== 'nginx') {
+      toast.error('Enter a restricted IPv4 CIDR and use ingress class nginx for external access')
+      return
+    }
+  }
+  if (selectInfra.value === 'K8S' && isJupyterObjectStorageCatalog.value) {
+    if (!ingressData.value.ingressEnabled || !ingressData.value.ingressHost || !servicePortCidr.value || servicePortCidr.value === '0.0.0.0/0') {
+      toast.error('Enter an Ingress hostname and a restricted IPv4 CIDR for Jupyter')
+      return
+    }
+    if (ingressData.value.ingressPath !== '/' || ingressData.value.ingressTlsEnabled || hpaData.value.hpaEnabled || workloadRebalancingEnabled.value) {
+      toast.error('Jupyter uses one replica, path / and HTTP NodePort 30880 without HPA or rebalancing')
+      return
+    }
+  }
+  if (isJupyterObjectStorageCatalog.value) {
     if ((objectStorageData.value.selectedStorageIds || []).length === 0) {
       toast.error('Select at least one registered Object Storage resource')
       return
@@ -1495,6 +1607,8 @@ const runInstall = async () => {
       const params = {
         namespace: selectNsId.value,
         clusterName: selectCluster.value,
+        openServicePort: ingressData.value.ingressEnabled && k8sOpenIngress.value,
+        servicePortCidr: ingressData.value.ingressEnabled ? servicePortCidr.value : undefined,
         catalogId: selectedCatalogIdx.value,
         servicePort,
         username: "",
@@ -1657,13 +1771,14 @@ const isJupyterObjectStorageCatalog = computed(() => {
 
 const supportsStorageClassConfig = computed(() => {
   if (selectInfra.value !== 'K8S') return false
+  if (isJupyterObjectStorageCatalog.value) return true
   if (!selectedCatalogInfo.value?.helmChart) return false
   if (!isLokiCatalog.value) return false
   return hasCatalogCapability(selectedCatalogInfo.value, STORAGE_CLASS_CAPABILITY)
 })
 
 const storageClassRequired = computed(() => {
-  return supportsStorageClassConfig.value && isLokiCatalog.value
+  return supportsStorageClassConfig.value && (isLokiCatalog.value || isJupyterObjectStorageCatalog.value)
 })
 
 const showStorageClassConfig = computed(() => {
@@ -1687,8 +1802,8 @@ const storageClassErrorMessage = computed(() => {
   if (!storageClassRequired.value) return ''
   if (storageClassLoading.value) return 'StorageClass list is loading.'
   if (storageClassLoadError.value) return 'StorageClass list could not be loaded.'
-  if (storageClassList.value.length === 0) return 'Loki requires a StorageClass, but none was found.'
-  if (_.isEmpty(selectedStorageClass.value)) return 'Loki requires a StorageClass.'
+  if (storageClassList.value.length === 0) return 'This application requires a StorageClass, but none was found.'
+  if (_.isEmpty(selectedStorageClass.value)) return 'This application requires a StorageClass.'
   return ''
 })
 
@@ -1710,7 +1825,7 @@ const showObjectStorageConfig = computed(() => {
     return Boolean(selectedCatalogInfo.value.packageInfo) && isJupyterObjectStorageCatalog.value
   }
   if (selectInfra.value === 'K8S') {
-    return Boolean(selectedCatalogInfo.value.helmChart)
+    return Boolean(selectedCatalogInfo.value.helmChart) || isJupyterObjectStorageCatalog.value
   }
   return false
 })
@@ -1757,7 +1872,7 @@ function isAwsProvider(provider: string) {
 
 const objectStorageRequired = computed(() => {
   return (selectInfra.value === 'K8S' && isLokiCatalog.value)
-    || (selectInfra.value === 'VM' && isJupyterObjectStorageCatalog.value)
+    || isJupyterObjectStorageCatalog.value
 })
 
 function hasObjectStorageCapability(catalog: SoftwareCatalog) {
@@ -1774,7 +1889,7 @@ function hasCatalogCapability(catalog: SoftwareCatalog, capability: string) {
 }
 
 function buildObjectStorageConfig() {
-  if (selectInfra.value === 'VM') {
+  if (selectInfra.value === 'VM' || isJupyterObjectStorageCatalog.value) {
     const selectedIds = objectStorageData.value.selectedStorageIds || []
     return {
       enabled: objectStorageData.value.enabled,
@@ -1875,7 +1990,7 @@ const filteredCatalogList = computed(() => {
   if (selectInfra.value === 'VM') {
     return catalogList.value.filter(catalog => catalog.packageInfo)
   } else if (selectInfra.value === 'K8S') {
-    return catalogList.value.filter(catalog => catalog.helmChart)
+    return catalogList.value.filter(catalog => catalog.helmChart || (String(catalog.packageInfo?.packageName || '').toLowerCase().includes('jupyter') && hasObjectStorageCapability(catalog)))
   }
   return catalogList.value
 })
@@ -1886,7 +2001,8 @@ const onChangeCatalog = async () => {
   const catalogInfo = catalogList.value.find((catalog) => inputApplications.value === catalog.name)
   if (catalogInfo) {
     selectedCatalogIdx.value = catalogInfo.id
-    inputServicePort.value = catalogInfo.defaultPort ? String(catalogInfo.defaultPort) : ""
+    inputServicePort.value = selectInfra.value === 'K8S' && isJupyterObjectStorageCatalog.value
+      ? '8888' : (catalogInfo.defaultPort ? String(catalogInfo.defaultPort) : "")
     hpaData.value = {
       hpaEnabled: Boolean(catalogInfo.hpaEnabled),
       hpaMinReplicas: catalogInfo.minReplicas || 1,
@@ -1901,6 +2017,11 @@ const onChangeCatalog = async () => {
       ingressClass: catalogInfo.ingressClass || 'nginx',
       ingressTlsEnabled: Boolean(catalogInfo.ingressTlsEnabled),
       ingressTlsSecret: catalogInfo.ingressTlsSecret || ''
+    }
+    if (selectInfra.value === 'K8S' && isJupyterObjectStorageCatalog.value) {
+      ingressData.value.ingressEnabled = true
+      hpaData.value.hpaEnabled = false
+      hpaData.value.hpaMinReplicas = 1
     }
     objectStorageData.value = getDefaultObjectStorageData()
     objectStorageCheckResult.value = null

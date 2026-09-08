@@ -8,10 +8,19 @@ app:
     # Remote pulls are bounded; command HTTP waits allow an additional 120 seconds.
     image-pull-timeout-seconds: ${VM_IMAGE_PULL_TIMEOUT_SECONDS:1800}
   object-storage:
+    k8s-transport: ${OBJECT_STORAGE_K8S_TRANSPORT:SSH_TUNNEL}
+    k8s-ssh-image: ${OBJECT_STORAGE_K8S_SSH_IMAGE:lscr.io/linuxserver/openssh-server@sha256:39ba37d50fdd6be1bf70644c871e5dcb9234ee79ac56424ea03ca08cadf1e7b0}
+    k8s-ssh-keygen: ${OBJECT_STORAGE_K8S_SSH_KEYGEN:ssh-keygen}
     transport: ${OBJECT_STORAGE_TRANSPORT:SSH_TUNNEL}
     tunnel:
       ssh-executable: ${OBJECT_STORAGE_SSH_EXECUTABLE:ssh}
     gateway-public-base-url: ${OBJECT_STORAGE_GATEWAY_PUBLIC_BASE_URL:http://localhost:18084}
+    # Full gateway URL reachable from K8s Pods; independent of VM SSH transport.
+    # k8s-gateway-url: ${OBJECT_STORAGE_K8S_GATEWAY_URL:}
+    # k8s-allow-http: ${OBJECT_STORAGE_K8S_ALLOW_HTTP:false}
+    k8s-gateway-url: ${OBJECT_STORAGE_K8S_GATEWAY_URL:http://210.219.181.78:18084/applications/object-storage-gateway}
+    k8s-allow-http: ${OBJECT_STORAGE_K8S_ALLOW_HTTP:true}
+    k8s-ready-timeout-seconds: ${OBJECT_STORAGE_K8S_READY_TIMEOUT_SECONDS:1800}
     grant-ttl-hours: ${OBJECT_STORAGE_GATEWAY_GRANT_TTL_HOURS:8760}
     presigned-url-ttl-seconds: ${OBJECT_STORAGE_PRESIGNED_URL_TTL_SECONDS:600}
   scheduling:

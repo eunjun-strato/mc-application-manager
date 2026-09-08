@@ -64,7 +64,9 @@ public class ObjectStorageSmokeTestService {
         }
         response.getChecks().add(ok("catalogCapability", "Catalog supports object-storage configuration."));
 
-        if (StringUtils.isBlank(request.getClusterName())) {
+        if (StringUtils.isBlank(request.getClusterName()) || (catalog.getPackageInfo() != null
+                && catalog.getPackageInfo().getPackageName() != null
+                && catalog.getPackageInfo().getPackageName().toLowerCase(java.util.Locale.ROOT).contains("jupyter"))) {
             return runRegisteredObjectStorageCheck(request, response);
         }
 

@@ -192,6 +192,10 @@ public class KubernetesMonitoringService {
         }
     }
 
+    private boolean isManagedJupyter(DeploymentHistory deployment) {
+        return deployment.getReleaseName() != null && deployment.getReleaseName().startsWith("mcmp-jupyter-");
+    }
+
     private List<DeploymentHistory> getActiveK8sDeployments() {
         List<DeploymentHistory> allDeployments = historyRepository.findAll();
         log.debug("Total deployments found: {}", allDeployments.size());
@@ -230,8 +234,8 @@ public class KubernetesMonitoringService {
             return;
         }
 
-        String namespace = DEFAULT_WORKLOAD_NAMESPACE;
-        String appName = deployment.getCatalog().getHelmChart().getChartName();
+        String namespace = isManagedJupyter(deployment) ? deployment.getNamespace() : DEFAULT_WORKLOAD_NAMESPACE;
+        String appName = isManagedJupyter(deployment) ? "jupyter" : deployment.getCatalog().getHelmChart().getChartName();
         String lookupName = resolveWorkloadLookupName(deployment, appName);
         List<Pod> pods = findPodsForDeployment(client, namespace, deployment, appName);
         if (pods.isEmpty()) {
@@ -413,7 +417,7 @@ public class KubernetesMonitoringService {
     @Transactional
     private void updateApplicationStatus(DeploymentHistory deployment, KubernetesClient client) {
         // K8s 배포는 항상 default namespace에 배포됨
-        String namespace = DEFAULT_WORKLOAD_NAMESPACE;
+        String namespace = isManagedJupyter(deployment) ? deployment.getNamespace() : DEFAULT_WORKLOAD_NAMESPACE;
         String clusterName = deployment.getClusterName();
         
         // null 체크 추가
@@ -422,7 +426,7 @@ public class KubernetesMonitoringService {
             return;
         }
         
-        if (deployment.getCatalog().getHelmChart() == null) {
+        if (deployment.getCatalog().getHelmChart() == null && !isManagedJupyter(deployment)) {
             log.error("HelmChart is null for catalog ID: {}", deployment.getCatalog().getId());
             return;
         }
@@ -432,7 +436,7 @@ public class KubernetesMonitoringService {
             return;
         }
         
-        String appName = deployment.getCatalog().getHelmChart().getChartName();
+        String appName = isManagedJupyter(deployment) ? "jupyter" : deployment.getCatalog().getHelmChart().getChartName();
         String lookupName = resolveWorkloadLookupName(deployment, appName);
         Long catalogId = deployment.getCatalog().getId();
 

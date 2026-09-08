@@ -19,6 +19,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import kr.co.mcmp.softwarecatalog.application.model.ObjectStorageTunnel;
 import kr.co.mcmp.softwarecatalog.application.repository.ObjectStorageTunnelRepository;
+import kr.co.mcmp.softwarecatalog.application.model.K8sObjectStorageTunnel;
+import kr.co.mcmp.softwarecatalog.application.repository.K8sObjectStorageTunnelRepository;
 
 @ExtendWith(SpringExtension.class)
 @ContextConfiguration(classes=ObjectStorageTunnelRepositoryTest.Config.class)
@@ -35,7 +37,7 @@ class ObjectStorageTunnelRepositoryTest {
             var factory=new LocalContainerEntityManagerFactoryBean();
             factory.setDataSource(source);
             factory.setJpaVendorAdapter(new HibernateJpaVendorAdapter());
-            factory.setManagedTypes(PersistenceManagedTypes.of(ObjectStorageTunnel.class.getName()));
+            factory.setManagedTypes(PersistenceManagedTypes.of(ObjectStorageTunnel.class.getName(), K8sObjectStorageTunnel.class.getName()));
             factory.setJpaPropertyMap(java.util.Map.of("hibernate.hbm2ddl.auto","create-drop"));
             return factory;
         }
@@ -44,6 +46,27 @@ class ObjectStorageTunnelRepositoryTest {
         }
     }
     @Autowired ObjectStorageTunnelRepository repository;
+    @Autowired K8sObjectStorageTunnelRepository k8s;
+
+    @Test void k8sLeaseAndStopIntentSurviveOwnerRestart() {
+        k8s.deleteAll();
+        var t=new K8sObjectStorageTunnel();
+        t.setDeploymentId(99L); t.setNamespace("default"); t.setClusterName("test-cluster");
+        t.setReleaseName("mcmp-jupyter-99"); t.setWorkloadUid("workload-uid"); t.setSecretUid("secret-uid");
+        k8s.saveAndFlush(t);
+        Instant now=Instant.now();
+        assertThat(k8s.claim(99L,"first",now,now.plusSeconds(120))).isEqualTo(1);
+        assertThat(k8s.claim(99L,"second",now,now.plusSeconds(120))).isZero();
+        k8s.status(99L,"second","READY",now);
+        assertThat(k8s.findById(99L).orElseThrow().getStatus()).isEqualTo("STARTING");
+        assertThat(k8s.renew("first",now.plusSeconds(121),now.plusSeconds(240))).isZero();
+        k8s.desire(99L,"STOPPED",now); k8s.release("first");
+        assertThat(k8s.claim(99L,"second",now,now.plusSeconds(120))).isEqualTo(1);
+        var saved=k8s.findById(99L).orElseThrow();
+        assertThat(saved.getDesiredState()).isEqualTo("STOPPED");
+        assertThat(saved.getWorkloadUid()).isEqualTo("workload-uid");
+        assertThat(saved.getSecretUid()).isEqualTo("secret-uid");
+    }
 
     @BeforeEach void prepare(){
         repository.deleteAll();

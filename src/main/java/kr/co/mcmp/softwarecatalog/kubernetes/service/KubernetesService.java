@@ -33,6 +33,7 @@ import lombok.extern.slf4j.Slf4j;
 public class KubernetesService {
 
     private final KubernetesDeployService deploymentService;
+    private final K8sJupyterService jupyterService;
     private final KubernetesOperationService operationService;
     private final DeploymentHistoryRepository historyRepository;
     private final ApplicationStatusRepository statusRepository;
@@ -51,7 +52,7 @@ public class KubernetesService {
             catalog = findCatalogById(request.getCatalogId());
             updateApplicationStatus(request.getNamespace(), request.getClusterName(), catalog, ApplicationStatusValues.PREPARING_METRICS_SERVER);
             // DTO를 포함하여 호출
-            history = deploymentService.deployApplication(
+            history = jupyterService.supports(catalog) ? jupyterService.deploy(request, catalog) : deploymentService.deployApplication(
                 request.getNamespace(), 
                 request.getClusterName(), 
                 catalog, 
@@ -67,6 +68,8 @@ public class KubernetesService {
         } catch (Exception e) {
             log.error("Application deployment failed", e);
 
+            if (e instanceof K8sJupyterService.DeploymentFailure failure) history = failure.history;
+            if (e instanceof KubernetesDeployService.DeploymentFailure failure) history = failure.history;
             if (history == null) {
                 history = DeploymentHistory.builder()
                         .namespace(request.getNamespace())
@@ -79,7 +82,7 @@ public class KubernetesService {
                         .executedAt(LocalDateTime.now())
                         .workloadRebalancingEnabled(Boolean.TRUE.equals(request.getWorkloadRebalancingEnabled()))
                         .build();
-            } else {
+            } else if (!"DELETE_PENDING".equals(history.getStatus())) {
                 history.setStatus("FAILED");
             }
 
@@ -108,7 +111,7 @@ public class KubernetesService {
     public Map<String, Integer> stopApplication(String namespace, String clusterName, Long catalogId, String username) {
         try {
             SoftwareCatalog catalog = findCatalogById(catalogId);
-            Map<String, Integer> stoppedReplicas = operationService.stopApplication(namespace, clusterName, catalog, username);
+            Map<String, Integer> stoppedReplicas = jupyterService.supports(catalog) ? jupyterService.scale(namespace, clusterName, catalogId, 0, false) : operationService.stopApplication(namespace, clusterName, catalog, username);
             updateApplicationStatus(namespace, clusterName, catalog, ActionType.STOP.name() );
             return stoppedReplicas;
         } catch (Exception e) {
@@ -120,7 +123,8 @@ public class KubernetesService {
     public void restartApplication(String namespace, String clusterName, Long catalogId, String username) {
         try {
             SoftwareCatalog catalog = findCatalogById(catalogId);
-            operationService.restartApplication(namespace, clusterName, catalog, username);
+            if (jupyterService.supports(catalog)) jupyterService.scale(namespace, clusterName, catalogId, 1, true);
+            else operationService.restartApplication(namespace, clusterName, catalog, username);
             updateApplicationStatus(namespace, clusterName, catalog, ActionType.RESTART.name());
         } catch (Exception e) {
             log.error("애플리케이션 재시작 중 오류 발생", e);
@@ -131,7 +135,8 @@ public class KubernetesService {
     public void startApplication(String namespace, String clusterName, Long catalogId, Map<String, Integer> previousReplicas, String username) {
         try {
             SoftwareCatalog catalog = findCatalogById(catalogId);
-            operationService.startApplication(namespace, clusterName, catalog, previousReplicas, username);
+            if (jupyterService.supports(catalog)) jupyterService.scale(namespace, clusterName, catalogId, 1, false);
+            else operationService.startApplication(namespace, clusterName, catalog, previousReplicas, username);
             updateApplicationStatus(namespace, clusterName, catalog, ActionType.START.name());
         } catch (Exception e) {
             log.error("Application start failed", e);
@@ -142,7 +147,8 @@ public class KubernetesService {
     public void uninstallApplication(String namespace, String clusterName, Long catalogId, String username) {
         try {
             SoftwareCatalog catalog = findCatalogById(catalogId);
-            operationService.uninstallApplication(namespace, clusterName, catalog, username);
+            if (jupyterService.supports(catalog)) jupyterService.uninstall(namespace, clusterName, catalogId);
+            else operationService.uninstallApplication(namespace, clusterName, catalog, username);
             updateApplicationStatus(namespace, clusterName, catalog, ActionType.UNINSTALL.name());
         } catch (Exception e) {
             log.error("애플리케이션 제거 중 오류 발생", e);
