@@ -406,6 +406,26 @@ public class HelmChartService {
         }
     }
 
+    /** Roll back only the release created by this deployment, without chart-name fallback. */
+    public void uninstallRelease(String namespace, String clusterName, String releaseName) {
+        if (releaseName == null || releaseName.length() > 53
+                || !releaseName.matches("[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")) {
+            throw new IllegalArgumentException("A valid deployment release name is required for rollback");
+        }
+        Path kubeconfig = null;
+        try {
+            kubeconfig = createTempKubeconfigFile(getKubeconfigForCluster(namespace, clusterName));
+            runHelmUninstallCli(releaseName, namespace, kubeconfig);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to roll back Helm release " + releaseName, e);
+        } finally {
+            if (kubeconfig != null) {
+                try { Files.deleteIfExists(kubeconfig); }
+                catch (IOException e) { log.warn("Failed to delete rollback kubeconfig: {}", e.getMessage()); }
+            }
+        }
+    }
+
     public void uninstallHelmChart(String namespace, SoftwareCatalog catalog, String clusterName) {
         uninstallHelmChart(namespace, catalog, catalog.getHelmChart(), clusterName);
     }
@@ -1379,7 +1399,7 @@ public class HelmChartService {
         log.info("helm repo update output: {}", out);
     }
 
-    private void runHelmUninstallCli(String releaseName, String namespace, Path kubeconfig) throws Exception {
+    void runHelmUninstallCli(String releaseName, String namespace, Path kubeconfig) throws Exception {
         java.util.List<String> cmd = new java.util.ArrayList<>();
         String helmPath = getHelmPath();
         cmd.add(helmPath); cmd.add("uninstall");

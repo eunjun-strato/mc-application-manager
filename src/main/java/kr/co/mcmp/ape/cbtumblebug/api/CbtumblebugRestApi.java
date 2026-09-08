@@ -422,9 +422,16 @@ public class CbtumblebugRestApi {
 
     /** Read CSP attachment metadata through Tumblebug; no CSP credentials in AM. */
     public JsonNode getCspWorkerInfo(String connectionName, String cspId) {
-        if (cspId == null || !cspId.matches("[A-Za-z0-9._:-]+"))
+        // Azure VMSS workers use ARM resource IDs containing '/'. Keep the whole
+        // ID in one encoded path segment; the URI overload avoids double encoding.
+        boolean simpleId = cspId != null && cspId.matches("[A-Za-z0-9._:-]+");
+        boolean azureId = cspId != null && cspId.matches(
+                "(?i)/subscriptions/[a-z0-9-]+/resourceGroups/[a-z0-9._()-]+/providers/Microsoft\\.Compute/"
+                + "(?:virtualMachines/[a-z0-9._-]+|virtualMachineScaleSets/[a-z0-9._-]+/virtualMachines/[0-9]+)");
+        if ((!simpleId && !azureId) || java.util.Arrays.stream(cspId.split("/"))
+                .anyMatch(segment -> segment.equals(".") || segment.equals("..")))
             throw new CbtumblebugException("Unsupported worker CSP identifier for attachment lookup");
-        return securityMetadataRequest("/tumblebug/forward/cspvm/" + cspId, HttpMethod.POST,
+        return securityMetadataRequest("/tumblebug/forward/cspvm/" + UriUtils.encodePathSegment(cspId, StandardCharsets.UTF_8), HttpMethod.POST,
                 Map.of("ConnectionName", connectionName));
     }
 
@@ -447,7 +454,7 @@ public class CbtumblebugRestApi {
         return executeWithConnectionCheck("securityMetadata", () -> {
             try {
                 ObjectMapper mapper = new ObjectMapper();
-                var response = restClient.request(createApiUrl(path), createCommonHeaders(),
+                var response = restClient.request(URI.create(createApiUrl(path)), createCommonHeaders(),
                         body == null ? null : mapper.writeValueAsString(body), method,
                         new ParameterizedTypeReference<String>() {});
                 JsonNode result = mapper.readTree(response.getBody());

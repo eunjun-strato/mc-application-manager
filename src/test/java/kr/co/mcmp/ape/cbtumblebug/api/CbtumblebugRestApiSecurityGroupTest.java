@@ -1,6 +1,7 @@
 package kr.co.mcmp.ape.cbtumblebug.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeast;
@@ -9,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -25,17 +27,48 @@ class CbtumblebugRestApiSecurityGroupTest {
     @Test void workerDiscoveryAndImportStayBehindTumblebug() throws Exception {
         when(restClient.request(anyString(), any(), any(), any(), any())).thenAnswer(i ->
                 ResponseEntity.ok(i.getArgument(0,String.class).endsWith("/readyz") ? "ready" : "{}"));
+        when(restClient.request(any(URI.class), any(), any(), any(), any())).thenReturn(ResponseEntity.ok("{}"));
         api.getCspWorkerInfo("aws-seoul", "i-worker");
         api.registerExistingSecurityGroup("default","aws-seoul","vnet","worker","sg-existing");
-        var urls=ArgumentCaptor.forClass(String.class);
+        var urls=ArgumentCaptor.forClass(URI.class);
         var bodies=ArgumentCaptor.forClass(Object.class);
         verify(restClient,atLeast(2)).request(urls.capture(),any(),bodies.capture(),any(),any());
-        assertThat(urls.getAllValues()).contains("http://mc-infra-manager:1323/tumblebug/forward/cspvm/i-worker",
-                "http://mc-infra-manager:1323/tumblebug/ns/default/resources/securityGroup?option=register");
+        assertThat(urls.getAllValues()).contains(URI.create("http://mc-infra-manager:1323/tumblebug/forward/cspvm/i-worker"),
+                URI.create("http://mc-infra-manager:1323/tumblebug/ns/default/resources/securityGroup?option=register"));
         String body=bodies.getAllValues().stream().filter(String.class::isInstance).map(String.class::cast)
                 .filter(s->s.contains("cspResourceId")).findFirst().orElseThrow();
         assertThat(new ObjectMapper().readTree(body).path("cspResourceId").asText()).isEqualTo("sg-existing");
         assertThat(body).doesNotContain("firewallRules");
+    }
+
+    @Test void azureWorkerIdReachesHttpAsOneEncodedSegment() {
+        var template = new org.springframework.web.client.RestTemplate();
+        var server = org.springframework.test.web.client.MockRestServiceServer.bindTo(template).build();
+        var realApi = new CbtumblebugRestApi(new CbtumblebugRestClient(template));
+        ReflectionTestUtils.setField(realApi, "cbtumblebugUrl", "mc-infra-manager");
+        ReflectionTestUtils.setField(realApi, "cbtumblebugPort", "1323");
+        ReflectionTestUtils.setField(realApi, "cbtumblebugId", "test-user");
+        ReflectionTestUtils.setField(realApi, "cbtumblebugPass", "test-pass");
+        String worker = "/subscriptions/abc-123/resourceGroups/CB_korea/providers/Microsoft.Compute/virtualMachineScaleSets/aks-ng1-vmss/virtualMachines/0";
+        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo("http://mc-infra-manager:1323/tumblebug/readyz"))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess("ready", org.springframework.http.MediaType.TEXT_PLAIN));
+        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo(
+                "http://mc-infra-manager:1323/tumblebug/forward/cspvm/" + worker.replace("/", "%2F")))
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.method(HttpMethod.POST))
+                .andExpect(org.springframework.test.web.client.match.MockRestRequestMatchers.content().json("{\"ConnectionName\":\"azure-korea\"}"))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess("{}", org.springframework.http.MediaType.APPLICATION_JSON));
+        realApi.getCspWorkerInfo("azure-korea", worker);
+        server.verify();
+    }
+
+    @Test void rejectsPathTraversalAndUnexpectedWorkerPaths() {
+        for (String id : new String[]{null, "", "..", "../other", "i-node?x=y", "i-node%2Fother",
+                "/subscriptions/abc/resourceGroups/../providers/Microsoft.Compute/virtualMachines/vm",
+                "/subscriptions/abc/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/sg"}) {
+            assertThatThrownBy(() -> api.getCspWorkerInfo("azure-korea", id))
+                    .hasMessageContaining("Unsupported worker CSP identifier");
+        }
+        org.mockito.Mockito.verifyNoInteractions(restClient);
     }
 
     @Mock

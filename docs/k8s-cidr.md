@@ -16,6 +16,16 @@ verifying every worker attachment; EKS SSH source SGs are not worker attachments
 An already registered matching SG is reused. Otherwise AM registers the existing
 CSP SG via `POST .../securityGroup?option=register`, with a deterministic name,
 then adds only the requested CIDR/TCP 30880 rule. AM calls no CSP API directly.
+Azure ARM VM/VMSS worker IDs are encoded as one path segment and sent as a URI
+to preserve encoded slashes through the HTTP client. The complete CSP ID is
+retained for worker identity verification; it is never reduced to a VM name.
+Spider v0.13.2's Azure SecurityHandler uses the connection's region as the NSG
+resource group during registration and rule operations. AKS-created NSGs in a
+different resource group therefore still fail registration with ResourceNotFound.
+The AM encoding fix does not resolve that driver limitation. Until the driver is
+fixed, automatic SG provisioning must not be reported as successful. Operators
+who have already configured the firewall can explicitly disable automatic SG
+changes; the application Ingress CIDR remains enforced.
 Missing worker IDs, unavailable attachment metadata, VPC mismatches or ambiguous
 SGs fail closed. This does not claim every provider's cspvm metadata is sufficient;
 providers must expose the needed identifiers and attachments through Spider.
@@ -39,7 +49,9 @@ retains its existing CIDR annotation and grant handling.
 
 After Helm installation, AM records the release then optionally provisions the
 shared SG rule. A provisioning failure attempts uninstall and records FAILED or
-DELETE_PENDING. Successful uninstall releases only bindings for that release;
+DELETE_PENDING. Rollback passes the newly recorded release name directly to Helm;
+it never falls back to the chart name or another deployment's latest release.
+Successful uninstall releases only bindings for that release;
 rules still needed by other applications are retained. Failed release of a rule
 can be retried by uninstalling again.
 

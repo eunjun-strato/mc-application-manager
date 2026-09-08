@@ -149,7 +149,7 @@ public class KubernetesDeployService {
             log.error("애플리케이션 배포 중 오류 발생", e);
             if (history != null) {
                 boolean clean = true;
-                try { helmChartService.uninstallHelmChart(namespace, catalog, helmChart, clusterName); }
+                try { helmChartService.uninstallRelease(namespace, clusterName, history.getReleaseName()); }
                 catch (Exception cleanup) { clean = false; e.addSuppressed(cleanup); }
                 if (clean) {
                     try { ingressAccess.release(history.getId()); }
