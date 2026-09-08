@@ -1,7 +1,7 @@
 # -----------------------------------------------------------
 # Stage 1: Build tools (download Docker & Helm binaries)
 # -----------------------------------------------------------
-FROM debian:bullseye-slim AS builder
+FROM debian:trixie-slim AS builder
 
 ARG DOCKER_VERSION=27.1.2
 ARG HELM_VERSION=v3.15.3
@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # -----------------------------------------------------------
 # Stage 2: Runtime image (lightweight OpenJDK + copied tools)
 # -----------------------------------------------------------
-FROM openjdk:17.0.1-jdk-slim
+FROM eclipse-temurin:17-jdk-noble
 
 # Install curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
