@@ -43,6 +43,7 @@ public class KubernetesDeployService {
     private final DeploymentHistoryRepository deploymentHistoryRepository;
     private final SoftwareSourceService softwareSourceService;
     private final KubeconfigResolver kubeconfigResolver;
+    private final K8sIngressAccessService ingressAccess;
 
     /**
      * 입력 파라미터 검증 공통 메서드
@@ -85,7 +86,10 @@ public class KubernetesDeployService {
             String username, kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest request) {
         // 입력 파라미터 검증
         validateInputParameters(namespace, clusterName, catalog);
-        
+        if (request == null) request = kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest.builder()
+                .namespace(namespace).clusterName(clusterName).build();
+        String ingressCidr = K8sIngressPolicy.validate(request, DeploymentConfigDTO.from(request, catalog));
+        DeploymentHistory history = null;
         // 소스 선택 로직 추가
         HelmChart helmChart = softwareSourceService.getArtifactHubSource(catalog.getId())
                 .orElseThrow(() -> new IllegalStateException("No ArtifactHub source found for catalog: " + catalog.getId()));
@@ -102,6 +106,7 @@ public class KubernetesDeployService {
             if (ingressEnabled) {
                 updateApplicationStatus(namespace, clusterName, catalog, ApplicationStatusValues.PREPARING_INGRESS_NGINX);
                 helmChartService.ensureIngressController(client, namespace, clusterName);
+                ingressAccess.verifyController(client, namespace);
             }
 
             updateApplicationStatus(namespace, clusterName, catalog, ApplicationStatusValues.DEPLOYING);
@@ -128,7 +133,7 @@ public class KubernetesDeployService {
                 releaseName = helmChartService.findLatestReleaseNameForChart(namespace, clusterName, helmChart.getChartName());
             }
 
-            return createDeploymentHistory(
+            history = deploymentHistoryRepository.saveAndFlush(createDeploymentHistory(
                     namespace,
                     clusterName,
                     catalog,
@@ -137,9 +142,23 @@ public class KubernetesDeployService {
                     podStatus,
                     servicePort,
                     "SUCCESS",
-                    releaseName);
+                    releaseName));
+            if (ingressCidr != null) ingressAccess.open(request, history);
+            return history;
         } catch (Exception e) {
             log.error("애플리케이션 배포 중 오류 발생", e);
+            if (history != null) {
+                boolean clean = true;
+                try { helmChartService.uninstallRelease(namespace, clusterName, history.getReleaseName()); }
+                catch (Exception cleanup) { clean = false; e.addSuppressed(cleanup); }
+                if (clean) {
+                    try { ingressAccess.release(history.getId()); }
+                    catch (Exception cleanup) { clean = false; e.addSuppressed(cleanup); }
+                }
+                history.setStatus(clean ? "FAILED" : "DELETE_PENDING");
+                deploymentHistoryRepository.saveAndFlush(history);
+                throw new DeploymentFailure(history, e);
+            }
             throw new RuntimeException("애플리케이션 배포 실패", e);
         }
     }
@@ -149,6 +168,14 @@ public class KubernetesDeployService {
             return DeploymentConfigDTO.from(request, catalog).isIngressEnabled();
         }
         return Boolean.TRUE.equals(catalog.getIngressEnabled());
+    }
+
+    static final class DeploymentFailure extends IllegalStateException {
+        final DeploymentHistory history;
+        DeploymentFailure(DeploymentHistory history, Exception cause) {
+            super("K8s application access provisioning failed: " + cause.getMessage(), cause);
+            this.history = history;
+        }
     }
 
     private void updateApplicationStatus(String namespace, String clusterName, SoftwareCatalog catalog, String status) {

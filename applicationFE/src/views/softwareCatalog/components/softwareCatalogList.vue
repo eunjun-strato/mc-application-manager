@@ -499,6 +499,9 @@ const getEndpoint = (history: any, status: any) => {
   const ingressHost = history?.ingressHost
   const ingressPath = history?.ingressPath
 
+  if (history?.releaseName?.startsWith('mcmp-jupyter-') && ingressHost) {
+    return `http://${ingressHost}:30880/`
+  }
   if (publicIp && servicePort) return `${publicIp}:${servicePort}`
   if (publicIp) return publicIp
   if (ingressHost && ingressPath) return `${ingressHost}${ingressPath}`

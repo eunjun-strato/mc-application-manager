@@ -11,7 +11,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -124,6 +123,8 @@ public class DockerDeploymentService implements DeploymentService {
             } catch (Exception e) {
                 log.error("Deployment failed", e);
                 history.setStatus("FAILED");
+                history.setUpdatedAt(LocalDateTime.now());
+                deploymentHistoryRepository.save(history);
                 applicationHistoryService.updateApplicationStatus(history, "FAILED", user);
                 applicationHistoryService.addDeploymentLog(history, LogType.ERROR, "Deployment failed: " + e.getMessage());
             }
@@ -191,7 +192,9 @@ public class DockerDeploymentService implements DeploymentService {
                 deploymentFutures.toArray(new CompletableFuture[0])
             );
             
-            allFutures.get(30, TimeUnit.MINUTES); // 30분 타임아웃
+            // Each remote request/pull is bounded. Do not mark active workers
+            // failed while queued VMs or large downloads are still running.
+            allFutures.join();
             
             // 배포 결과 처리
             List<String> successfulVms = new ArrayList<>();
@@ -322,8 +325,8 @@ public class DockerDeploymentService implements DeploymentService {
         );
         
         try {
-            // 모든 배포 완료까지 대기 (최대 10분)
-            allDeployments.get(10, java.util.concurrent.TimeUnit.MINUTES);
+            // Use the same completion policy for single- and multi-VM installs.
+            allDeployments.join();
             
             // 결과 수집 및 VM별 ApplicationStatus 생성
             List<String> successfulVms = new ArrayList<>();
@@ -370,6 +373,8 @@ public class DockerDeploymentService implements DeploymentService {
         } catch (Exception e) {
             log.error("Deployment timeout or error", e);
             history.setStatus("FAILED");
+            history.setUpdatedAt(LocalDateTime.now());
+            deploymentHistoryRepository.save(history);
             applicationHistoryService.createApplicationStatusForVm(
                     history,
                     history.getVmId(),
@@ -420,6 +425,9 @@ public class DockerDeploymentService implements DeploymentService {
             // Docker 컨테이너 실행 (클러스터링 지원)
             DockerTarget dockerTarget = new DockerTarget(
                     request.getNamespace(), request.getMciId(), vmId);
+            applicationHistoryService.addDeploymentLog(history, LogType.INFO,
+                    "VM " + vmId + ": preparing the container image. The first download may take several minutes; "
+                            + "container startup, Object Storage connection and inbound rules follow after it completes.");
             ContainerDeployResult deployResult = dockerOperationService.runDockerContainer(
                 dockerTarget,
                 convertToMap(deployParams, catalog.getId(), history.getId()),
@@ -478,7 +486,10 @@ public class DockerDeploymentService implements DeploymentService {
                     return new DeploymentResult(vmId, false, null, errorMsg);
                 }
             } else {
-                String errorMsg = "Could not retrieve container ID";
+                String errorMsg = deployResult.getDeploymentResult();
+                if (errorMsg == null || errorMsg.isBlank()) {
+                    errorMsg = "Container deployment returned no container ID";
+                }
                 log.error("Async deployment failed for VM: {} - {}", vmId, errorMsg);
                 objectStorageAccessGrantService.revoke(history.getId(), vmId);
                 return new DeploymentResult(vmId, false, null, errorMsg);
@@ -604,11 +615,11 @@ public class DockerDeploymentService implements DeploymentService {
                 "bash",
                 "-lc",
                 "set -e; "
-                        + "if [ ! -e /home/jovyan/work/ObjectStorage.ipynb ]; then "
-                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/ObjectStorage.ipynb; fi; "
-                        + "chmod 600 /home/jovyan/work/ObjectStorage.ipynb; "
+                        + "if [ ! -e /home/jovyan/work/sample-data.ipynb ]; then "
+                        + "printf '%s' \"$MCMP_OBJECT_STORAGE_NOTEBOOK_B64\" | base64 -d > /home/jovyan/work/sample-data.ipynb; fi; "
+                        + "chmod 600 /home/jovyan/work/sample-data.ipynb; "
                         + "exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\" "
-                        + "--ServerApp.default_url=/lab/tree/ObjectStorage.ipynb"));
+                        + "--ServerApp.default_url=/lab/tree/sample-data.ipynb"));
     }
 
     @SuppressWarnings("unchecked")
@@ -870,6 +881,12 @@ public class DockerDeploymentService implements DeploymentService {
         DeploymentStatusResult result = determineDeploymentResult(successfulVms, failedVms);
         
         history.setStatus(result.status);
+        // Multi-VM histories were saved individually above. The batch summary
+        // returned via firstHistory must not overwrite that VM's own status.
+        if (request.getVmIds() == null || request.getVmIds().size() <= 1) {
+            history.setUpdatedAt(LocalDateTime.now());
+            deploymentHistoryRepository.save(history);
+        }
         // updateApplicationStatus는 각 VM별로 이미 호출했으므로 여기서는 호출하지 않음
         applicationHistoryService.addDeploymentLog(history, result.logType, result.message);
     }

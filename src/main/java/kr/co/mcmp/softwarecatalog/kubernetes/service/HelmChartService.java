@@ -291,6 +291,7 @@ public class HelmChartService {
 
             // 6. 배포 설정 DTO 생성 (우선순위: Request > Catalog > Default)
             DeploymentConfigDTO config = DeploymentConfigDTO.from(request, catalog);
+            String ingressCidr = K8sIngressPolicy.validate(request, config);
             log.info("배포 설정 생성 완료 - {}", config);
 
             // 7. Helm Chart 설치 - CLI 방식으로 변경
@@ -362,12 +363,13 @@ public class HelmChartService {
             }
 
             applyObjectStorageValues(catalog, request, providerName, helmChart.getChartName(), objectStorageValues);
+            K8sIngressPolicy.configureValues(helmChart.getChartName(), values, objectStorageValues, config, ingressCidr);
             if (!objectStorageValues.isEmpty()) {
                 tempObjectStorageValuesPath = createTempValuesFile(objectStorageValues);
             }
 
             // Helm CLI로 설치 실행
-            runHelmInstallCli(releaseName, chartRef, namespace, helmChart.getChartVersion(), tempKubeconfigPath, values, tempObjectStorageValuesPath);
+            runHelmInstallCli(releaseName, chartRef, namespace, helmChart.getChartVersion(), tempKubeconfigPath, values, tempObjectStorageValuesPath, ingressCidr, config.getIngressHost());
             
             // 간단한 Release 스텁 반환 - null 반환으로 변경
             Release result = null;
@@ -400,6 +402,26 @@ public class HelmChartService {
                 } catch (IOException e) {
                     log.warn("Failed to delete temporary Object Storage values file: {}", e.getMessage());
                 }
+            }
+        }
+    }
+
+    /** Roll back only the release created by this deployment, without chart-name fallback. */
+    public void uninstallRelease(String namespace, String clusterName, String releaseName) {
+        if (releaseName == null || releaseName.length() > 53
+                || !releaseName.matches("[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")) {
+            throw new IllegalArgumentException("A valid deployment release name is required for rollback");
+        }
+        Path kubeconfig = null;
+        try {
+            kubeconfig = createTempKubeconfigFile(getKubeconfigForCluster(namespace, clusterName));
+            runHelmUninstallCli(releaseName, namespace, kubeconfig);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to roll back Helm release " + releaseName, e);
+        } finally {
+            if (kubeconfig != null) {
+                try { Files.deleteIfExists(kubeconfig); }
+                catch (IOException e) { log.warn("Failed to delete rollback kubeconfig: {}", e.getMessage()); }
             }
         }
     }
@@ -797,6 +819,7 @@ public class HelmChartService {
             java.util.Map<String, String> values = new java.util.HashMap<>();
             values.put("controller.service.type", "NodePort");
             values.put("controller.service.nodePorts.http", "30880");
+            values.put("controller.service.externalTrafficPolicy", "Local");
 
             // Helm CLI로 repository 추가
             kr.co.mcmp.softwarecatalog.application.model.HelmChart ingressHelmChart = new HelmChart();
@@ -1208,6 +1231,11 @@ public class HelmChartService {
                                    Path kubeconfig,
                                    java.util.Map<String,String> values,
                                    Path valuesFile) throws Exception {
+        runHelmInstallCli(releaseName, chartRef, namespace, version, kubeconfig, values, valuesFile, null, null);
+    }
+
+    private void runHelmInstallCli(String releaseName, String chartRef, String namespace, String version,
+                                   Path kubeconfig, Map<String,String> values, Path valuesFile, String ingressCidr, String ingressHost) throws Exception {
         java.util.List<String> cmd = new java.util.ArrayList<>();
         // Helm 경로 지정 (관리자 권한 없이 사용)
         String helmPath = getHelmPath();
@@ -1221,6 +1249,7 @@ public class HelmChartService {
             cmd.add(valuesFile.toString());
         }
         cmd.addAll(buildHelmSetArguments(values));
+        if (ingressCidr != null) verifyIngressBeforeInstall(cmd, ingressCidr, ingressHost);
         ProcessBuilder pb = new ProcessBuilder(cmd);
         Process p = pb.start();
         int ec = p.waitFor();
@@ -1230,6 +1259,28 @@ public class HelmChartService {
             throw new RuntimeException("helm install failed (" + ec + "): " + err + "\n" + out);
         }
         log.info("helm install output: {}", out);
+    }
+
+    private void verifyIngressBeforeInstall(java.util.List<String> installCommand, String cidr, String ingressHost) throws Exception {
+        var command = new java.util.ArrayList<>(installCommand);
+        command.addAll(java.util.List.of("--dry-run=client", "--output", "json"));
+        Path output = Files.createTempFile("helm-ingress-check-", ".json");
+        Path error = Files.createTempFile("helm-ingress-check-", ".err");
+        try {
+            var process = new ProcessBuilder(command).redirectOutput(output.toFile()).redirectError(error.toFile()).start();
+            if (!process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                throw new IllegalArgumentException("Helm Ingress preflight timed out.");
+            }
+            if (process.exitValue() != 0) throw new IllegalArgumentException("Helm Ingress preflight failed; verify the chart values and version.");
+            var result = new com.fasterxml.jackson.databind.ObjectMapper().readTree(output.toFile());
+            StringBuilder manifest = new StringBuilder(result.path("manifest").asText());
+            for (var hook : result.path("hooks")) manifest.append("\n---\n").append(hook.path("manifest").asText());
+            K8sIngressPolicy.verifyManifest(manifest.toString(), cidr, ingressHost);
+        } finally {
+            Files.deleteIfExists(output);
+            Files.deleteIfExists(error);
+        }
     }
 
     private void runHelmInstallCliInNamespace(String releaseName,
@@ -1348,7 +1399,7 @@ public class HelmChartService {
         log.info("helm repo update output: {}", out);
     }
 
-    private void runHelmUninstallCli(String releaseName, String namespace, Path kubeconfig) throws Exception {
+    void runHelmUninstallCli(String releaseName, String namespace, Path kubeconfig) throws Exception {
         java.util.List<String> cmd = new java.util.ArrayList<>();
         String helmPath = getHelmPath();
         cmd.add(helmPath); cmd.add("uninstall");

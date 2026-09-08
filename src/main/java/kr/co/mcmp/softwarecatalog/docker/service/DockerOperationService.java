@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -42,6 +43,9 @@ public class DockerOperationService {
     private final DockerSshCommandExecutor commandExecutor;
     private final ObjectMapper objectMapper;
 
+    @Value("${app.vm-deployment.image-pull-timeout-seconds:1800}")
+    private int imagePullTimeoutSeconds = 1800;
+
     public DockerHostResourceInfo getHostResourceInfo(DockerTarget target) {
         try {
             DockerCommandResult result = commandExecutor.execute(
@@ -76,6 +80,7 @@ public class DockerOperationService {
             List<String> commandArguments,
             List<String> vmPublicIps,
             int vmIndex) {
+        String phase = "validation";
         try {
             if (deployParams == null) {
                 throw new IllegalArgumentException("Deployment parameters are required");
@@ -97,12 +102,13 @@ public class DockerOperationService {
                     environmentVariables,
                     parsedVolumeMounts,
                     commandArguments);
-            String script = "if ! docker image inspect "
-                    + DockerSshCommandExecutor.shellQuote(imageName)
-                    + " >/dev/null 2>&1; then docker pull "
-                    + DockerSshCommandExecutor.shellQuote(imageName)
-                    + " || exit $?; fi\n"
-                    + "mcmp_container_id=$(" + createCommand + ") || exit $?\n"
+            // Do not enqueue container creation behind a long-running pull in
+            // the same remote script. If AM loses the pull response, that script
+            // may only cache an image, never start an untracked application.
+            phase = "image preparation";
+            prepareImage(target, imageName);
+            phase = "container startup";
+            String script = "mcmp_container_id=$(" + createCommand + ") || exit $?\n"
                     + "docker start \"$mcmp_container_id\" >/dev/null || exit $?\n"
                     + "mcmp_attempt=0\n"
                     + "while [ \"$mcmp_attempt\" -lt 60 ]; do\n"
@@ -113,7 +119,7 @@ public class DockerOperationService {
                     + "    exit 0\n"
                     + "  fi\n"
                     + "  if [ \"$mcmp_state\" = exited ] || [ \"$mcmp_state\" = dead ]; then\n"
-                    + "    docker logs --tail 50 \"$mcmp_container_id\" >&2 || true\n"
+                    + "    echo 'Container exited during startup; inspect its logs on the VM' >&2\n"
                     + "    exit 1\n"
                     + "  fi\n"
                     + "  mcmp_attempt=$((mcmp_attempt + 1))\n"
@@ -133,8 +139,28 @@ public class DockerOperationService {
         } catch (Exception e) {
             log.error("Error running Docker container through SSH on VM {}", target.vmId(), e);
             String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            return new ContainerDeployResult(null, message, false);
+            return new ContainerDeployResult(null, "VM " + phase + " failed: " + message, false);
         }
+    }
+
+    private void prepareImage(DockerTarget target, String imageName) {
+        if (imagePullTimeoutSeconds < 60 || imagePullTimeoutSeconds > 7200) {
+            throw new IllegalArgumentException("VM image pull timeout must be between 60 and 7200 seconds");
+        }
+        String image = DockerSshCommandExecutor.shellQuote(imageName);
+        String script = "if docker image inspect " + image + " >/dev/null 2>&1; then exit 0; fi\n"
+                + "docker info >/dev/null 2>&1 || { echo 'Docker daemon is unavailable' >&2; exit 1; }\n"
+                + "command -v timeout >/dev/null 2>&1 || { echo 'Image pull requires the timeout command' >&2; exit 127; }\n"
+                + "timeout --kill-after=10s " + imagePullTimeoutSeconds + "s docker pull --quiet " + image + "\n"
+                + "mcmp_pull_status=$?\n"
+                + "if [ \"$mcmp_pull_status\" -eq 124 ] || [ \"$mcmp_pull_status\" -eq 137 ]; then\n"
+                + "  echo 'Image download timed out or was killed (configured limit: " + imagePullTimeoutSeconds
+                + " seconds). Check VM bandwidth/resources or VM_IMAGE_PULL_TIMEOUT_SECONDS. No container was created.' >&2\n"
+                + "fi\n"
+                + "exit \"$mcmp_pull_status\"";
+        log.info("Preparing image {} on VM {} (pull limit: {} seconds)",
+                imageName, target.vmId(), imagePullTimeoutSeconds);
+        commandExecutor.execute(target, script);
     }
 
     public String getContainerId(DockerTarget target, String containerName) {
@@ -239,6 +265,8 @@ public class DockerOperationService {
         List<String> arguments = new ArrayList<>();
         arguments.add("docker");
         arguments.add("create");
+        // A missing image must not trigger another unbounded pull during create.
+        arguments.add("--pull=never");
         arguments.add("--name");
         arguments.add(containerName);
 

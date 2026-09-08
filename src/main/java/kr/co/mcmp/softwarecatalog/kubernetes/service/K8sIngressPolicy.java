@@ -1,0 +1,89 @@
+package kr.co.mcmp.softwarecatalog.kubernetes.service;
+
+import java.util.*;
+import org.yaml.snakeyaml.Yaml;
+import kr.co.mcmp.softwarecatalog.application.dto.DeploymentConfigDTO;
+import kr.co.mcmp.softwarecatalog.application.dto.DeploymentRequest;
+
+/** Common policy for application Ingresses, independent of Object Storage. */
+final class K8sIngressPolicy {
+    private K8sIngressPolicy() {}
+
+    static String validate(DeploymentRequest request, DeploymentConfigDTO config) {
+        if (!config.isIngressEnabled()) {
+            if (Boolean.TRUE.equals(request.getOpenServicePort()) || (request.getServicePortCidr() != null && !request.getServicePortCidr().isBlank()))
+                throw new IllegalArgumentException("Enable Ingress to configure external CIDR access.");
+            return null;
+        }
+        if (!"nginx".equals(config.getIngressClass()))
+            throw new IllegalArgumentException("CIDR access on NodePort 30880 requires ingress class nginx.");
+        if (config.getIngressHost() == null || config.getIngressHost().isBlank() || "localhost".equals(config.getIngressHost()))
+            throw new IllegalArgumentException("Enter an Ingress hostname for external access.");
+        return K8sIngressAccessService.validateCidr(request.getServicePortCidr());
+    }
+
+    @SuppressWarnings("unchecked")
+    static void configureValues(String chart, Map<String,String> values, Map<String,Object> file,
+                                DeploymentConfigDTO config, String cidr) {
+        if (cidr == null) return;
+        String root = switch (chart.toLowerCase(Locale.ROOT)) {
+            case "rclone" -> "ingress.main";
+            case "prometheus" -> "server.ingress";
+            case "loki" -> "gateway.ingress";
+            default -> "ingress";
+        };
+        // Replace generic settings with the chart's native values shape.
+        values.keySet().removeIf(k -> k.startsWith("ingress.") || k.startsWith(root + "."));
+        Map<String,Object> ingress = file;
+        for (String key : root.split("\\."))
+            ingress = (Map<String,Object>) ingress.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
+        ingress.put("enabled", true);
+        ingress.put("ingressClassName", "nginx");
+        ingress.put("className", "nginx");
+        ingress.put("path", config.getIngressPath());
+        ingress.put("pathType", "Prefix");
+        ingress.put("hostname", config.getIngressHost());
+        Map<String,Object> annotations = (Map<String,Object>) ingress.computeIfAbsent("annotations", ignored -> new LinkedHashMap<>());
+        annotations.put(K8sIngressAccessService.CIDR_ANNOTATION, cidr);
+        annotations.put("kubernetes.io/ingress.class", "nginx");
+        boolean structuredHosts = "rclone".equalsIgnoreCase(chart) || "loki".equalsIgnoreCase(chart);
+        ingress.put("hosts", structuredHosts
+                ? List.of(Map.of("host", config.getIngressHost(), "paths", List.of(Map.of("path", config.getIngressPath(), "pathType", "Prefix"))))
+                : List.of(config.getIngressHost()));
+        if (config.isTlsEnabled()) {
+            if (config.getIngressTlsSecret() == null || config.getIngressTlsSecret().isBlank())
+                throw new IllegalArgumentException("Specify a TLS Secret for the application Ingress.");
+            ingress.put("tls", List.of(Map.of("secretName", config.getIngressTlsSecret(), "hosts", List.of(config.getIngressHost()))));
+        }
+    }
+
+    static void verifyManifest(String manifest, String cidr) {
+        verifyManifest(manifest, cidr, null);
+    }
+
+    static void verifyManifest(String manifest, String cidr, String expectedHost) {
+        if (cidr == null) return;
+        int routes = 0;
+        boolean hostFound = expectedHost == null;
+        for (Object doc : new Yaml().loadAll(manifest)) {
+            if (!(doc instanceof Map<?,?> resource)) continue;
+            Map<?,?> spec = map(resource.get("spec"));
+            if ("Ingress".equals(resource.get("kind"))) {
+                routes++;
+                if (spec.get("rules") instanceof List<?> rules)
+                    for (Object rule : rules) if (Objects.equals(expectedHost, map(rule).get("host"))) hostFound = true;
+                Map<?,?> annotations = map(map(resource.get("metadata")).get("annotations"));
+                Object clazz = spec.get("ingressClassName");
+                if (clazz == null) clazz = annotations.get("kubernetes.io/ingress.class");
+                if (!"nginx".equals(clazz) || !cidr.equals(annotations.get(K8sIngressAccessService.CIDR_ANNOTATION)))
+                    throw new IllegalArgumentException("Helm chart did not render the required nginx Ingress CIDR restriction.");
+            }
+            if ("Service".equals(resource.get("kind")) && Set.of("LoadBalancer", "NodePort").contains(Objects.toString(spec.get("type"), "")))
+                throw new IllegalArgumentException("Application Services must use ClusterIP to avoid bypassing Ingress CIDR restrictions.");
+        }
+        if (routes == 0) throw new IllegalArgumentException("Helm chart did not render an Ingress; add a compatible Ingress values mapping before exposing it.");
+        if (!hostFound) throw new IllegalArgumentException("Helm chart did not render the requested Ingress hostname.");
+    }
+
+    private static Map<?,?> map(Object value) { return value instanceof Map<?,?> m ? m : Map.of(); }
+}

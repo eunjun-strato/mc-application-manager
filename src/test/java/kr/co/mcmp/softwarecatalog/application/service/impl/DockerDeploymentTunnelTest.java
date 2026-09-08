@@ -59,7 +59,9 @@ class DockerDeploymentTunnelTest {
         ReflectionTestUtils.invokeMethod(service,"configureJupyterObjectStorage",parameters,request,catalog,history,"vm");
         assertThat(parameters.getEnvironmentVariables()).containsEntry("MCMP_OBJECT_STORAGE_GATEWAY_URL",
                 "http://127.0.0.1:18084/applications/object-storage-gateway");
-        assertThat(String.join(" ",parameters.getCommandArguments())).contains("if [ ! -e /home/jovyan/work/ObjectStorage.ipynb ]; then");
+        assertThat(String.join(" ",parameters.getCommandArguments()))
+                .contains("if [ ! -e /home/jovyan/work/sample-data.ipynb ]; then")
+                .contains("--ServerApp.default_url=/lab/tree/sample-data.ipynb");
     }
 
     void runtimeReady(){
@@ -91,5 +93,20 @@ class DockerDeploymentTunnelTest {
         verify(grants).revoke(1L,"vm");
         verify(exposure,never()).addRestrictedInboundRule(any(),any(),any());
         verify(tunnels,atLeastOnce()).remove(1L);
+    }
+
+    @Test void imageFailurePreservesCauseAndDoesNotOpenIngressOrInstallTunnel(){
+        var vm=new VmAccessInfo();vm.setPublicIP("192.0.2.10");
+        when(tumblebug.getVmInfo("default","infra","vm")).thenReturn(vm);
+        when(docker.runDockerContainer(eq(target),anyMap(),anyMap(),anyString(),anyList(),anyList(),eq(0)))
+                .thenReturn(new ContainerDeployResult(null,"VM image preparation failed: image pull timed out",false));
+        Object result=ReflectionTestUtils.invokeMethod(service,"deployToSingleVmAsync",
+                request,catalog,history,null,"vm",0,List.of("vm"),null);
+        assertThat((Boolean)ReflectionTestUtils.invokeMethod(result,"isSuccess")).isFalse();
+        assertThat((String)ReflectionTestUtils.invokeMethod(result,"getErrorMessage"))
+                .contains("image preparation", "image pull timed out");
+        verify(tunnels,never()).install(any(),any(),any());
+        verify(exposure,never()).addRestrictedInboundRule(any(),any(),any());
+        verify(grants).revoke(1L,"vm");
     }
 }

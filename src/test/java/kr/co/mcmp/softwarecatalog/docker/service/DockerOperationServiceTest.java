@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -62,8 +63,14 @@ class DockerOperationServiceTest {
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getContainerId()).isEqualTo(CONTAINER_ID);
         ArgumentCaptor<String> script = ArgumentCaptor.forClass(String.class);
-        verify(commandExecutor).execute(eq(TARGET), script.capture());
-        assertThat(script.getValue())
+        verify(commandExecutor, times(2)).execute(eq(TARGET), script.capture());
+        assertThat(script.getAllValues().get(0))
+                .contains("docker image inspect")
+                .contains("timeout --kill-after=10s 1800s docker pull")
+                .doesNotContain("docker create");
+        assertThat(script.getAllValues().get(1))
+                .contains("'--pull=never'")
+                .doesNotContain("docker pull")
                 .contains("'jenkins/jenkins:2.504.3-lts-jdk17'")
                 .contains("'jenkins-test'")
                 .contains("'8080:8080'")
@@ -134,13 +141,33 @@ class DockerOperationServiceTest {
 
         assertThat(result.isSuccess()).isTrue();
         ArgumentCaptor<String> script = ArgumentCaptor.forClass(String.class);
-        verify(commandExecutor).execute(eq(TARGET), script.capture());
-        assertThat(script.getValue())
+        verify(commandExecutor, times(2)).execute(eq(TARGET), script.capture());
+        assertThat(script.getAllValues().get(1))
                 .contains("'S3_BUCKET=sample-bucket'")
                 .contains("'mcmp-jupyter-work:/home/jovyan/work'")
                 .contains("'bash'")
                 .contains("'exec start-notebook.py --ServerApp.token=\"$JUPYTER_TOKEN\"'")
                 .doesNotContain("-e AWS_SECRET_ACCESS_KEY=secret$(id)");
+    }
+
+    @Test
+    void doesNotCreateContainerWhenImagePreparationFails() {
+        when(commandExecutor.execute(eq(TARGET), anyString()))
+                .thenThrow(new DockerCommandException(TARGET, 124, "image pull timed out"));
+
+        ContainerDeployResult result = service.runDockerContainer(
+                TARGET,
+                Map.of("name", "safe", "image", "large/image:latest", "portBindings", "8888:8888"),
+                List.of(),
+                0);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getDeploymentResult())
+                .contains("image preparation")
+                .contains("image pull timed out");
+        ArgumentCaptor<String> script = ArgumentCaptor.forClass(String.class);
+        verify(commandExecutor).execute(eq(TARGET), script.capture());
+        assertThat(script.getValue()).contains("docker pull").doesNotContain("docker create");
     }
 
     @Test

@@ -176,7 +176,7 @@ public class VmSecurityGroupExposureService {
         return port;
     }
 
-    private String validateRestrictedIpv4Cidr(String cidr) {
+    public static String validateRestrictedIpv4Cidr(String cidr) {
         if (cidr == null || cidr.isBlank()) {
             throw new ApplicationException("A restricted IPv4 CIDR is required for direct access");
         }
