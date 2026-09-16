@@ -29,6 +29,11 @@
             <strong>Deployment completed.</strong>
             <p class="mb-0">Check the application's running status in Apps Status.</p>
           </div>
+          <div v-if="interruptedDeployment" class="alert alert-warning" role="status">
+            AM restarted while tracking this installation. Check Apps Status before starting another installation.
+            <button type="button" class="btn btn-sm btn-outline-warning ms-2" :disabled="closingInterruptedTracking"
+              @click="closeInterruptedTracking">Close interrupted tracking</button>
+          </div>
           <fieldset v-show="!deploymentCompleted" :disabled="deploying || deploymentCompleted" class="border-0 p-0 m-0">
           <div v-if="hasProjectContext" class="alert alert-info py-2" role="status">
             Deployment targets are scoped to
@@ -922,7 +927,7 @@ import { type SoftwareCatalog } from '@/views/type/type'
 import { useUserStore } from '@/stores/user'
 import { isVmClusteringCatalog } from '@/utils/vmClustering'
 import { resolveInstallVmTarget } from '@/integration/installTarget'
-import { startIngressPreparation, getIngressPreparation } from '@/api/softwareCatalog'
+import { startIngressPreparation, getIngressPreparation, closeInterruptedDeployment } from '@/api/softwareCatalog'
 import { waitForIngressPreparation } from '@/utils/ingressPreparation'
 
 interface Props {
@@ -1059,6 +1064,19 @@ const objectStorageChecking = ref(false as boolean)
 const registeredObjectStorageList = ref([] as any[])
 const registeredObjectStorageLoading = ref(false as boolean)
 const registeredObjectStorageLoadError = ref(false as boolean)
+const interruptedDeployment = ref<{ id: string, namespace: string } | null>(null)
+const closingInterruptedTracking = ref(false)
+const closeInterruptedTracking = async () => {
+  const operation = interruptedDeployment.value
+  if (!operation || !confirm('Check Apps Status and confirm that no installation is still running before closing this interrupted tracking record. This does not cancel or uninstall an application. Continue?')) return
+  closingInterruptedTracking.value = true
+  try {
+    await closeInterruptedDeployment(operation.id, operation.namespace)
+    interruptedDeployment.value = null
+    toast.warning('Interrupted tracking closed. The application itself was not changed.')
+  } catch { toast.error('Could not close interrupted tracking. Reload its status before retrying.') }
+  finally { closingInterruptedTracking.value = false }
+}
 const deploying = ref(false)
 const deploymentCompleted = ref(false)
 let preparationEpoch = 0
@@ -1299,6 +1317,7 @@ onMounted(async () => {
 const setInit = async () => {
   preparationEpoch++
   deploymentCompleted.value = false
+  interruptedDeployment.value = null
   storageRequestSequence++
   const loadSequence = ++resourceLoadSequence
   clearTargetResources()
@@ -1924,7 +1943,7 @@ const runInstall = async () => {
           resourceType: selectedResourceType.value,
           additionalConfig: buildVmAdditionalConfig(),
         }
-        res = await runVmInstall(params)
+        res = await runVmInstall(params, isCurrentDeployment)
       } else {
         res = await runAction(params)
       }
@@ -1962,7 +1981,7 @@ const runInstall = async () => {
           isCurrentDeployment)
       }
       res = modalTitle.value == 'Application Installation'
-        ? await runK8SInstall(params)
+        ? await runK8SInstall(params, isCurrentDeployment)
         : await runAction(params)
     }
 
@@ -1982,10 +2001,14 @@ const runInstall = async () => {
   } catch (error) {
     if (!isCurrentDeployment()) return
     const message = error instanceof Error ? error.message : 'The deployment request failed.'
-    toast.error(message)
-    emitDeploymentEvent('DEPLOY_FAILED', {
-      message
-    })
+    if ((error as any)?.deploymentStatusUnknown) {
+      if ((error as any).interruptedOperation) interruptedDeployment.value = (error as any).interruptedOperation
+      toast.warning(message)
+      emitDeploymentEvent('DEPLOY_STATUS_UNKNOWN', { message })
+    } else {
+      toast.error(message)
+      emitDeploymentEvent('DEPLOY_FAILED', { message })
+    }
   } finally {
     deploying.value = false
   }

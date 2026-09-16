@@ -36,7 +36,51 @@ public class DatabaseInitializer implements CommandLineRunner{
             System.out.println("데이터베이스가 이미 초기화되어 있습니다. 건너뜁니다.");
         }
         ensureBuiltInJupyterCatalog();
+        ensureNginxHelmCatalog();
         ensureBuiltInCatalogCapabilities();
+    }
+
+    private void ensureNginxHelmCatalog() {
+        jdbcTemplate.update("""
+                INSERT INTO SOFTWARE_CATALOG (
+                    TITLE, DESCRIPTION, SUMMARY, CATEGORY, LOGO_URL_LARGE, LOGO_URL_SMALL,
+                    MIN_CPU, RECOMMENDED_CPU, MIN_MEMORY, RECOMMENDED_MEMORY, MIN_DISK,
+                    RECOMMENDED_DISK, CPU_THRESHOLD, MEMORY_THRESHOLD, MIN_REPLICAS,
+                    MAX_REPLICAS, HPA_ENABLED, DEFAULT_PORT, INGRESS_ENABLED, CREATED_AT, UPDATED_AT)
+                SELECT 'Nginx for Kubernetes', 'General-purpose Nginx web server deployed with Helm on Kubernetes.',
+                    'Nginx web server', 'Web Server', '/catalog-icons/nginx.svg', '/catalog-icons/nginx.svg',
+                    0.1, 0.5, 0.0625, 0.25, 1, 1, 80.0, 80.0, 1, 1, false, 80, true,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                WHERE NOT EXISTS (SELECT 1 FROM SOFTWARE_CATALOG WHERE LOWER(TITLE) = 'nginx for kubernetes')
+                """);
+        for (Long catalogId : jdbcTemplate.queryForList(
+                "SELECT ID FROM SOFTWARE_CATALOG WHERE LOWER(TITLE) = 'nginx for kubernetes'", Long.class)) {
+            jdbcTemplate.update("""
+                    INSERT INTO HELM_CHART (CATALOG_ID, CHART_NAME, CHART_VERSION, CHART_REPOSITORY_URL,
+                        REPOSITORY_NAME, REPOSITORY_DISPLAY_NAME, REPOSITORY_OFFICIAL, PACKAGE_ID,
+                        NORMALIZED_NAME, APP_VERSION, DESCRIPTION, CATEGORY, IMAGE_REPOSITORY, TAG, HAS_VALUES_SCHEMA)
+                    SELECT ?, 'nginx', '0.16.8', 'https://cloudpirates-io.github.io/helm-charts', 'cloudpirates',
+                        'CloudPirates', false, 'cloudpirates-nginx', 'nginx', '1.31.5',
+                        'Nginx web server from the CloudPirates Helm repository.', 'Web Server', 'nginx', '0.16.8', true
+                    WHERE NOT EXISTS (SELECT 1 FROM HELM_CHART WHERE CATALOG_ID = ?)
+                    """, catalogId, catalogId);
+            // Migrate only the exact AM-provided legacy mapping, never a customized chart.
+            jdbcTemplate.update("""
+                    UPDATE HELM_CHART
+                       SET CHART_VERSION = '0.16.8',
+                           CHART_REPOSITORY_URL = 'https://cloudpirates-io.github.io/helm-charts',
+                           REPOSITORY_NAME = 'cloudpirates', REPOSITORY_DISPLAY_NAME = 'CloudPirates',
+                           REPOSITORY_OFFICIAL = false, PACKAGE_ID = 'cloudpirates-nginx',
+                           NORMALIZED_NAME = 'nginx', APP_VERSION = '1.31.5',
+                           DESCRIPTION = 'Nginx web server from the CloudPirates Helm repository.',
+                           IMAGE_REPOSITORY = 'nginx', TAG = '0.16.8', HAS_VALUES_SCHEMA = true
+                     WHERE CATALOG_ID = ? AND PACKAGE_ID = 'mcmp-builtin-nginx'
+                       AND CHART_NAME = 'nginx' AND CHART_VERSION = '0.1.0'
+                       AND CHART_REPOSITORY_URL = 'http://localhost:18084/charts'
+                       AND REPOSITORY_NAME = 'mcmp-builtin'
+                    """, catalogId);
+            ensureCatalogReference(catalogId, "nginx", "TAG");
+        }
     }
 
     private void ensureBuiltInJupyterCatalog() {

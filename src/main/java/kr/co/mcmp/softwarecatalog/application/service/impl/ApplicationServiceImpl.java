@@ -32,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import kr.co.mcmp.softwarecatalog.application.service.ApplicationService;
 import kr.co.mcmp.softwarecatalog.application.service.NexusIntegrationService;
 import kr.co.mcmp.softwarecatalog.application.service.UnifiedLogService;
+import kr.co.mcmp.softwarecatalog.kubernetes.service.IngressAddressService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -62,6 +63,7 @@ public class ApplicationServiceImpl implements ApplicationService {
     private final CatalogRepository catalogRepository;
     
     private final UnifiedLogService unifiedLogService;
+    private final IngressAddressService ingressAddressService;
 
     // ===== 넥서스 연동 관련 메서드 (애플리케이션 배포/운영용) =====
     
@@ -566,6 +568,10 @@ public class ApplicationServiceImpl implements ApplicationService {
         
         // 간소화된 DTO로 변환
         IntegratedApplicationInfoDTO dto = convertToIntegratedDTOWithUnifiedLogs(deploymentHistory, applicationStatuses, logs, operations, errorLogs, podLogs);
+        var ingressEndpoint = ingressAddressService.getEndpoint(deploymentHistory, dto.getIngressEnabled(),
+                dto.getIngressClass(), dto.getIngressTlsEnabled());
+        dto.setIngressPublicIps(ingressEndpoint.publicIps());
+        dto.setIngressAccessPorts(ingressEndpoint.accessPorts());
         
         Map<String, Object> result = new HashMap<>();
         result.put("integratedInfo", dto);
@@ -737,7 +743,12 @@ public class ApplicationServiceImpl implements ApplicationService {
         List<UnifiedLogDTO> podLogs = unifiedLogService.getLogsByDeploymentIdAndModule(deploymentId, "KUBERNETES");
         
         // DTO로 변환
-        return convertToIntegratedDTOWithUnifiedLogs(deploymentHistory, applicationStatuses, logs, operations, errorLogs, podLogs);
+        IntegratedApplicationInfoDTO dto = convertToIntegratedDTOWithUnifiedLogs(deploymentHistory, applicationStatuses, logs, operations, errorLogs, podLogs);
+        var ingressEndpoint = ingressAddressService.getEndpoint(deploymentHistory, dto.getIngressEnabled(),
+                dto.getIngressClass(), dto.getIngressTlsEnabled());
+        dto.setIngressPublicIps(ingressEndpoint.publicIps());
+        dto.setIngressAccessPorts(ingressEndpoint.accessPorts());
+        return dto;
     }
 
     private List<ApplicationStatus> findApplicationStatusesForDeployment(DeploymentHistory deploymentHistory) {

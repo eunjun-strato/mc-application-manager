@@ -58,7 +58,7 @@ return { runInstall, cancel: () => { preparationEpoch++ }, invalidate: () => { s
 function harness(options = {}) {
   const calls = []
   const values = Object.fromEntries(Object.entries({
-    deploying: false, deploymentCompleted: false, modalTitle: 'Application Installation', selectInfra: options.infra || 'K8S', specCheckFlag: false,
+    jupyterInstallationUnsupported: false, deploying: false, deploymentCompleted: false, modalTitle: 'Application Installation', selectInfra: options.infra || 'K8S', specCheckFlag: false,
     specChecking: false, projectScopeError: '', servicePortCidr: '203.0.113.4/32',
     ingressData: { ingressEnabled: options.ingress !== false, ingressHost: 'app.company.com', ingressPath: '/', ingressTlsEnabled: Boolean(options.tls) },
     isJupyterObjectStorageCatalog: Boolean(options.jupyter), projectContextKey: 'workspace/project-a',

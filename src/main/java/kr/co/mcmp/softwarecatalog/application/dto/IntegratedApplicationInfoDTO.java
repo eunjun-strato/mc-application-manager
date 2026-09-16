@@ -70,6 +70,8 @@ public class IntegratedApplicationInfoDTO {
     // Ingress 정보
     private Boolean ingressEnabled;
     private String ingressHost;
+    private List<String> ingressPublicIps;
+    private List<Integer> ingressAccessPorts;
     private String ingressPath;
     private String ingressClass;
     private Boolean ingressTlsEnabled;
