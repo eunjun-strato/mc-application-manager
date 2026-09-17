@@ -279,7 +279,7 @@
                 v-model="inputApplications"
                 @change="onChangeCatalog">
                 <option v-for="(catalog, idx) in filteredCatalogList" :key="idx" :value="catalog.name">
-                  [{{ catalog.name }}] {{ catalog.packageInfo?.packageVersion || "latest" }}
+                  [{{ catalogDisplayName(catalog, catalogList) }}] {{ catalog.packageInfo?.packageVersion || "latest" }}
                 </option>
               </select>
             </div>
@@ -482,7 +482,7 @@
               <p class="text-muted">Select the application</p>
               <select class="form-select" v-model="inputApplications" @change="onChangeCatalog">
                 <option v-for="(catalog, idx) in filteredCatalogList" :key="idx" :value="catalog.name">
-                  [{{ catalog.name }}] {{ catalog.helmChart?.chartVersion || catalog.packageInfo?.packageVersion || "latest" }}
+                  [{{ catalogDisplayName(catalog, catalogList) }}] {{ catalog.helmChart?.chartVersion || catalog.packageInfo?.packageVersion || "latest" }}
                 </option>
               </select>
             </div>
@@ -914,6 +914,7 @@
 </template>
 
 <script setup lang="ts">
+import { catalogDisplayName } from '../catalogGrouping'
 import { ref } from 'vue';
 import { useToast } from 'vue-toastification';
 import { onMounted, onBeforeUnmount, watch, computed } from 'vue';
@@ -2442,7 +2443,7 @@ const filteredCatalogList = computed(() => {
 const onChangeCatalog = async () => {
   if(modalTitle.value === 'Application Installation') specCheckFlag.value = true
 
-  const catalogInfo = catalogList.value.find((catalog) => inputApplications.value === catalog.name)
+  const catalogInfo = filteredCatalogList.value.find((catalog) => inputApplications.value === catalog.name)
   if (catalogInfo) {
     selectedCatalogIdx.value = catalogInfo.id
     inputServicePort.value = selectInfra.value === 'K8S' && isJupyterObjectStorageCatalog.value
