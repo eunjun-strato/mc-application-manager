@@ -25,6 +25,19 @@ Supported chart identities and render-tested versions:
   `ingress.extraTls[]`. `ingress.tls=false` and `selfSigned=false` avoid chart-derived
   Secret names / certificate generation; `extraTls` references the selected Secret.
 
+- CloudPirates, `https://cloudpirates-io.github.io/helm-charts`, chart `nginx` 0.16.8
+  (application 1.31.5): `CLOUDPIRATES_NGINX` uses the same Ingress shape as the generic
+  fallback: `ingress.className`, `ingress.hosts[].host`, `ingress.hosts[].paths[]`,
+  and `ingress.tls[]`. Its separate service mapping writes AM's effective service port
+  to the `service.ports` array (`port`, `targetPort: http`, `protocol: TCP`, `name: http`).
+  This is an array, unlike Bitnami's `service.ports.http` map.
+  AM also sets the named container port `http` and nginx `serverConfig` listener to
+  8080. The Service retains the selected external-to-container service port and
+  `targetPort: http`. This avoids binding privileged port 80 on clusters that enforce
+  the upstream nonroot UID 101; `runAsNonRoot: true` and
+  `allowPrivilegeEscalation: false` remain unchanged. The container listener is not
+  the public ingress access port.
+
 Repository alias changes and trailing URL slashes are accepted. A chart from a
 different repository, including a mirror or a different vendor with the same chart
 name, uses the generic fallback unless a matching adapter is registered. Unknown
@@ -183,6 +196,27 @@ Path type, TLS lists and referenced Service / port. Namespaces omitted from mani
 inherit the Helm release namespace; this is distinct from proving live AM namespace
 selection. The suite runs `helm template --kube-version 1.30.0`, not server-side
 admission, Pod scheduling or an HTTP request through a live controller.
+
+The external CloudPirates chart has a separate opt-in render test. Set `AM_HELM_BIN`
+to the Helm executable and run:
+
+```sh
+AM_HELM_BIN="$(command -v helm)" bash gradlew cleanTest test \
+  --tests kr.co.mcmp.softwarecatalog.kubernetes.service.CloudPiratesNginxHelmTest \
+  --tests kr.co.mcmp.util.NginxHelmCatalogTest
+```
+
+`cleanTest` ensures that a previous run skipped without `AM_HELM_BIN` does not leave
+an up-to-date test result. The test pulls chart 0.16.8 from the external HTTP repository
+into its own temporary directory, then renders that exact tgz by absolute path.
+It does not use the repository's older `nginx/` fixture. Four combinations passed on
+2026-09-16: TLS disabled/enabled crossed with classes `nginx` and
+`public-iks-k8s-nginx`. Each checks service port 8088 targeting the named container port `http`, container port
+8080 and `listen 8080` in the rendered ConfigMap, nonroot UID 101 with privilege
+escalation disabled, CIDR ingress policy, HPA,
+upstream nginx image, absence of PVCs, and the selected TLS Secret when enabled.
+The three H2 catalog tests also passed. This is chart and migration validation,
+not a claim that the external chart has been deployed to a live cluster.
 
 Unit tests additionally cover request/catalog precedence, generic fallback for
 unknown/missing repositories and unknown chart names, invalid inputs, YAML string

@@ -1,0 +1,1 @@
+.rating-stars[data-v-6565f21d]{display:flex;gap:5px;margin-bottom:10px}.star[data-v-6565f21d]{font-size:24px;color:#ddd;cursor:pointer;transition:color .2s}.star[data-v-6565f21d]:hover,.star.active[data-v-6565f21d]{color:#ffc107}.star:hover~.star[data-v-6565f21d]{color:#ddd}

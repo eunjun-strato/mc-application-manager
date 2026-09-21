@@ -84,7 +84,7 @@ service.interceptors.response.use(
     if (res.code === 200) {
       return res;
     } else {
-      toast.error(res.detail)
+      if (!response.config?.url?.startsWith('/applications/deployment-submissions/')) toast.error(res.detail)
       return Promise.reject(new Error(res.message || "Error"));
     }
   },
@@ -95,7 +95,7 @@ service.interceptors.response.use(
       status: res?.status,
       message: error?.message
     })
-    if (res?.status === 404) {
+    if (res?.status === 404 && !error?.config?.url?.startsWith('/applications/deployment-submissions/')) {
       toast.error('API Call Fail :: Code 404')
     }
     if (axios.isCancel(error)) {

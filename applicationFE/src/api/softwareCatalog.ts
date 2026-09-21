@@ -2,6 +2,8 @@ import request, { getProjectContextHeaders } from "../common/request";
 import axios from "axios";
 import { getApiBaseUrl } from "@/common/url";
 
+import { submitAndTrackDeployment, deploymentOperationId } from "@/utils/deploymentSubmission";
+
 const apiBaseUrl = getApiBaseUrl(import.meta.env.VITE_API_URL).replace(/\/$/, '')
 const standardPolicyAnalysisDays = [90, 30, 7]
 
@@ -31,6 +33,31 @@ export const searchArtifacthubhub = (keyword: string) => {
   return request.get(`/search/artifacthub/${keyword}`)
 }
 
+// Retain only operation IDs in session storage, never deployment settings or credentials.
+async function trackInstallation(type: 'VM' | 'K8S', params: any, isCurrent?: () => boolean) {
+  const headers = getProjectContextHeaders()
+  const key = 'am-deployment:' + JSON.stringify([headers['X-MCMP-Workspace-ID'], headers['X-MCMP-Project-ID'],
+    params.namespace, type, params.catalogId, type === 'VM' ? params.mciId : params.clusterName,
+    type === 'VM' ? params.vmNodeGroupId || [...(params.vmIds || [])].sort() : null])
+  let id = sessionStorage.getItem(key)
+  if (!id) { id = deploymentOperationId(); sessionStorage.setItem(key, id) }
+  const operationId = id
+  return submitAndTrackDeployment(operationId, params.namespace,
+    async () => (await request.post(`/applications/deployment-submissions/${type}`, params,
+      { headers: { 'Idempotency-Key': operationId }, timeout: 30000 })).data,
+    async () => (await request.get(`/applications/deployment-submissions/${operationId}`,
+      { params: { namespace: params.namespace }, timeout: 30000 })).data,
+    isCurrent, undefined, undefined, () => sessionStorage.removeItem(key))
+}
+
+export async function closeInterruptedDeployment(id: string, namespace: string) {
+  const response = await request.post(`/applications/deployment-submissions/${id}/close-interrupted`, null, { params: { namespace } })
+  for (const key of Object.keys(sessionStorage)) {
+    if (key.startsWith('am-deployment:') && sessionStorage.getItem(key) === id) sessionStorage.removeItem(key)
+  }
+  return response
+}
+
 // Application 설치 (VM)
 export const runVmInstall = (params: {
   namespace: string,
@@ -47,8 +74,8 @@ export const runVmInstall = (params: {
   vmDeploymentMode: string,
   resourceType: string,
   additionalConfig?: Record<string, any>,
-}) => {
-  return request.post(`/applications/vm/deploy`, params)
+}, isCurrent?: () => boolean) => {
+  return trackInstallation('VM', params, isCurrent)
 }
 
 // Application Action (VM -> INSTALL, UNINSTALL, RUN, RESTART, STOP)
@@ -77,8 +104,8 @@ export const runK8SInstall = (params: {
   ingressTlsEnabled?: boolean,
   ingressTlsSecret?: string,
   additionalConfig?: Record<string, any>
-}) => {
-  return request.post(`/applications/k8s/deploy`, params)
+}, isCurrent?: () => boolean) => {
+  return trackInstallation('K8S', params, isCurrent)
 }
 
 export const objectStorageSmokeCheck = (params: {

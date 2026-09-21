@@ -32,7 +32,7 @@ final class HelmIngressValues {
             if (config.isTlsEnabled() && config.getIngressTlsSecret() == null) {
                 throw new IllegalStateException("Resolve the TLS Secret using the actual Helm release name before building values");
             }
-            ingress.put(profile == Profile.GENERIC ? "className" : "ingressClassName", config.getIngressClass());
+            ingress.put((profile == Profile.GENERIC || profile == Profile.CLOUDPIRATES_NGINX) ? "className" : "ingressClassName", config.getIngressClass());
             List<Map<String, Object>> tls = config.isTlsEnabled()
                     ? List.of(Map.of("secretName", config.getIngressTlsSecret(), "hosts", List.of(host)))
                     : List.of();
@@ -44,7 +44,7 @@ final class HelmIngressValues {
                     ingress.put("pathType", "Prefix");
                     ingress.put("tls", tls);
                 }
-                case RCLONE, GENERIC -> {
+                case RCLONE, CLOUDPIRATES_NGINX, GENERIC -> {
                     ingress.put("hosts", List.of(Map.of("host", host, "paths", List.of(
                             Map.of("path", config.getIngressPath(), "pathType", "Prefix")))));
                     ingress.put("tls", tls);
@@ -63,9 +63,25 @@ final class HelmIngressValues {
 
         Map<String, Object> result = new LinkedHashMap<>();
         switch (profile) {
-            case GRAFANA, BITNAMI_NGINX, GENERIC -> result.put("ingress", ingress);
+            case GRAFANA, BITNAMI_NGINX, CLOUDPIRATES_NGINX, GENERIC -> result.put("ingress", ingress);
             case PROMETHEUS -> result.put("server", Map.of("ingress", ingress));
             case RCLONE -> result.put("ingress", Map.of("main", ingress));
+        }
+        if (profile == Profile.CLOUDPIRATES_NGINX) {
+            // Non-root nginx must not rely on a provider allowing privileged container ports.
+            result.put("containerPorts", List.of(Map.of("name", "http", "containerPort", 8080, "protocol", "TCP")));
+            result.put("serverConfig", """
+                    server {
+                        listen 8080;
+                        server_name _;
+                        root /usr/share/nginx/html;
+                        index index.html index.htm;
+                        location / { try_files $uri $uri/ =404; }
+                    }
+                    """);
+            // This chart uses a port array; the generic service.port value is ignored upstream.
+            result.put("service", Map.of("ports", List.of(Map.of(
+                    "name", "http", "port", config.getServicePort(), "targetPort", "http", "protocol", "TCP"))));
         }
         return result;
     }
@@ -98,7 +114,7 @@ final class HelmIngressValues {
             }
             requirePlainYamlString(host, "Host");
         }
-        if (profile == Profile.GRAFANA || profile == Profile.PROMETHEUS || profile == Profile.GENERIC) {
+        if (profile == Profile.GRAFANA || profile == Profile.PROMETHEUS || profile == Profile.CLOUDPIRATES_NGINX || profile == Profile.GENERIC) {
             requirePlainYamlString(config.getIngressClass(), "Class");
         }
     }
@@ -127,6 +143,7 @@ final class HelmIngressValues {
         PROMETHEUS("prometheus", "https://prometheus-community.github.io/helm-charts"),
         RCLONE("rclone", "https://jacobcolvin.com/helm-charts"),
         BITNAMI_NGINX("nginx", "https://charts.bitnami.com/bitnami"),
+        CLOUDPIRATES_NGINX("nginx", "https://cloudpirates-io.github.io/helm-charts"),
         // Fallback only: a repository/chart with a different schema still needs an adapter.
         GENERIC(null, null);
 

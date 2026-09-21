@@ -59,9 +59,15 @@
                 <div class="col-3 text-muted">
                   <div class="d-flex justify-content-end">
                     <div class="mouse-hover">
-                      <IconEdit class="me-2 cursor-pointer" size="15" stroke-width="2" data-bs-toggle="modal" data-bs-target="#modal-wizard" @click="onClickUpdate(catalog.id)" />
-                      <IconTrash class="cursor-pointer" size="15" stroke-width="2" @click="onClickDelete(catalog)" />
+                      <IconEdit class="me-2 cursor-pointer" size="15" stroke-width="2" @click.stop="onCatalogAction(catalog, 'edit')" />
+                      <IconTrash class="cursor-pointer" size="15" stroke-width="2" @click.stop="onCatalogAction(catalog, 'delete')" />
                     </div>
+                  </div>
+                  <div v-if="catalogAction?.catalogId === catalog.id" class="d-flex justify-content-end gap-1 my-1" @click.stop>
+                    <button v-for="member in catalog.catalogMembers" :key="member.id" type="button" class="btn btn-sm btn-outline-secondary" @click="selectCatalogMember(member)">
+                      {{ catalogAction?.action === 'edit' ? 'Edit' : 'Delete' }} {{ member.helmChart ? 'K8s' : 'VM' }}
+                    </button>
+                    <button type="button" class="btn btn-sm btn-ghost-secondary" aria-label="Cancel catalog action" @click="catalogAction = null">Cancel</button>
                   </div>
                   <div class="d-flex justify-content-end"  @click="showSoftwareCatalogDetail(idx)">
                     <span class="text-muted">
@@ -263,6 +269,8 @@
     @get-list="_getSoftwareCatalogList" /> -->
 </template>
 <script setup lang="ts">
+import { Modal } from 'bootstrap'
+import { groupCatalogs, loadGroupedDeploymentStatus } from '../catalogGrouping'
 // Component
 import { IconEdit, IconTrash, IconStarFilled, IconCloudDownload, IconPackage, IconRefresh } from '@tabler/icons-vue'
 import SoftwareCatalogWizard from './softwareCatalogWizard.vue';
@@ -342,7 +350,8 @@ defineExpose({
 const _getSoftwareCatalogList = async () => {
   try {
     await getSoftwareCatalogList("").then(({ data }) => {
-      _.forEach(data, function(item: any) {
+      const grouped = groupCatalogs(data)
+      _.forEach(grouped, function(item: any) {
         item.refData = groupedData(item.catalogRefs)
         item.isShow = false;
         item.deploymentStatuses = []
@@ -351,7 +360,7 @@ const _getSoftwareCatalogList = async () => {
         item.resolvedLogoUrl = resolveCatalogIconUrl(item)
         item.logoLoadFailed = false
       })
-      catalogList.value = data;
+      catalogList.value = grouped;
     })
   } catch(error) {
     console.log(error)
@@ -375,7 +384,7 @@ const groupedData = (catalogRefs: any) => {
 */
 const onClickUpdate = (catalogId: number) => {
   // 선택된 catalog 찾기
-  const selectedCatalog = catalogList.value.find(catalog => catalog.id === catalogId)
+  const selectedCatalog = catalogList.value.flatMap(catalog => catalog.catalogMembers || [catalog]).find(catalog => catalog.id === catalogId)
   
   selectCatalogId.value = catalogId
   selectCatalogInfo.value = selectedCatalog || {}
@@ -387,6 +396,23 @@ const onClickUpdate = (catalogId: number) => {
       wizardModal.value.initForUpdate(catalogId, selectedCatalog)
     }
   }, 100)
+}
+
+const catalogAction = ref<{ catalogId: number; action: 'edit' | 'delete' } | null>(null)
+const onCatalogAction = (catalog: any, action: 'edit' | 'delete') => {
+  catalogAction.value = { catalogId: catalog.id, action }
+  if (catalog.catalogMembers.length === 1) selectCatalogMember(catalog.catalogMembers[0])
+}
+const selectCatalogMember = (member: any) => {
+  const action = catalogAction.value?.action
+  catalogAction.value = null
+  if (action === 'edit') {
+    onClickUpdate(member.id)
+    const element = document.getElementById('modal-wizard')
+    if (element) Modal.getOrCreateInstance(element).show()
+  } else if (action === 'delete') {
+    onClickDelete(member)
+  }
 }
 
 const onClickDelete = (catalog: any) => {
@@ -422,7 +448,7 @@ const loadDeploymentStatus = async (catalog: any) => {
 
   catalog.deploymentStatusLoading = true
   try {
-    const { data } = await getCatalogDeploymentStatus(catalog.id)
+    const data = await loadGroupedDeploymentStatus(catalog.deploymentCatalogIds || [catalog.id], getCatalogDeploymentStatus)
     catalog.deploymentStatuses = buildDeploymentStatusRows(data)
     catalog.deploymentStatusLoaded = true
   } catch (error) {

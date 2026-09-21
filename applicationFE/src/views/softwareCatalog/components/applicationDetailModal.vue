@@ -437,6 +437,8 @@
                       <tr>
                         <th>Enabled</th>
                         <th>Host</th>
+                        <th>Access Port</th>
+                        <th>Public IP (Worker / IBM Load Balancer)</th>
                         <th>Path</th>
                         <th>Class</th>
                         <th>TLS Enabled</th>
@@ -451,6 +453,8 @@
                           </span>
                         </td>
                         <td>{{ applicationDetail.ingressHost || 'N/A' }}</td>
+                        <td>{{ applicationDetail.ingressAccessPorts?.join(', ') || '-' }}</td>
+                        <td>{{ applicationDetail.ingressPublicIps?.join(', ') || '-' }}</td>
                         <td>{{ applicationDetail.ingressPath || 'N/A' }}</td>
                         <td>{{ applicationDetail.ingressClass || 'N/A' }}</td>
                         <td>
